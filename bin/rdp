@@ -1,0 +1,344 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.4"
+CMDSTR="$CMD v$CMDVER (2024-09-02)"
+
+set -e -u
+
+
+usage()
+{
+	echo -e "
+usage:	$CMD	(shows credential files)
+
+	$CMD [options] systemname [user] [rdesktop_parms]
+
+options:
+ -w|--wait	ping system and proceed only after positive response
+
+HINT: use 'rdp-credentials' to manage credentials file
+" >&2
+	exit 1
+}
+
+list_defaults()
+{
+	echo
+	echo "MACROS:"
+	echo
+	echo " {D}  DOMAIN (\$DOMAIN):      $DOMAIN"
+	echo " {A}  admin (\$ADMIN):        $ADMIN"
+	echo " {PA} PC admin (\$PC_ADMIN):  $PC_ADMIN"
+	echo
+}
+
+
+list_systems()
+{
+	local filter="${1:-}"
+	local sys=
+	local user=
+	local pass=
+	local fmt="%-36s %-30s %s\n"
+
+	printf "$fmt" "SYSTEM" "USER" "ALIASES"
+	echo
+
+	echo "$cred_cache" | sed -e 's/\.core\.klabs//' -e 's/\\/\\\\/' | while read sys user pass aliases
+	do
+		[ "$filter" != "" ] && {
+			echo "$sys $user $pass $aliases" | grep -q "$filter" || continue
+		}
+		printf "$fmt" "$sys" "$user" "$aliases"
+	done
+	echo
+	return 0
+}
+
+search_sys()
+{
+	local sys=$1
+	local user=${2:-}
+	local found=
+	local cnt=
+	local match=
+
+	#[ "X$user" != "X" ] && user='\s\s*'"$user"
+
+	# \s	verbatim search
+	# ,0\s	verbatim search with console parm
+	# .*	match search
+	#
+	#for match in '\s' ',0\s' '.*'
+	#do
+		#found=$(echo "$cred_cache" | grep "^\s*$sys$match$user" | sed -e 's/^\s*//')
+		#[ "X$found" != "X" ] && break
+	#done
+	$DEBUG && echo -e "D# CREDENTIALS:\n$cred_cache\n" >&2
+
+	for match in \
+		"${sys}\s\s*$user" \
+		"${sys},0\s\s*$user" \
+		"${sys}.*\s\s*$user" \
+		".*$user\s\s*.*\s$sys" \
+		".*\s$sys" \
+		".*\s$sys,0"
+	do
+		$DEBUG && echo "D# trying match='$match'" >&2
+
+		found=$(echo "$cred_cache" | grep "^\s*$match" | sed -e 's/^\s*//')
+		[ "X$found" != "X" ] && break
+	done
+
+	[ "X$found" = "X" ] && return 1
+
+	cnt=$(echo "$found" | wc -l)
+	case $cnt in
+	  1)	echo "$found" ;;
+	  *)	echo -e "\n$cnt SYSTEMS FOUND, PLEASE NARROW YOUR CHOICHE:\n\n" >&2
+	  	list_systems "$match" >&2
+		return 1
+		;;
+	esac
+	return 0
+}
+
+confirm()
+{
+	local answer=
+	while :
+	do
+		echo -n "$1 "
+		read answer
+		case $answer in
+	  	  [1sSyY]|[sS][iI]|[yY][eE][sS])	return 0 ;;
+	  	  [0nN]|[nN][oO])			return 1 ;;
+		esac
+	done
+}
+
+# (MAIN)
+
+cfgfilename=.$CMD.credentials
+cfgfile=
+CREDENTIALS=
+PRJ=${PRJ:-$HOME}
+
+# MACROS defaults
+#
+DOMAIN="core.klabs"
+ADMIN="Administrator"
+PC_ADMIN="Administrator"
+
+[ "X${1:-}" = "X-h" ] && usage
+
+
+echo
+for dir in $PRJ $HOME __NONE__
+do
+	[ -f "$dir/$cfgfilename" ] && {
+		echo "using config: $dir/$cfgfilename"
+		cfgfile="$dir/$cfgfilename"
+		break
+	}
+done
+[ "X$cfgfile" = "X" ] && {
+	echo -e "\nconfig file '$cfgfilename' not found in" >&2
+	echo $PRJ $HOME >&2
+	echo >&2
+	exit 1
+}
+
+buf=$(rdp-credentials get "$cfgfile")
+eval "$buf"
+
+[ "X${CREDENTIALS:-}" = "X" ] && {
+	echo -e "\n  \$CREDENTIALS not defined in the config file?\n" >&2
+	exit 1
+}
+
+
+DEBUG=false
+geometry="/f"
+user=
+domain=
+pass=
+wait_for_ping=false
+
+wanted_user=
+
+parms=
+opts=
+
+if dpkg -l freerdp-x11 | grep -q "^ii "
+then
+	parms="+clipboard /cert-ignore"
+else
+	# freerdp2-x11
+	parms="/clipboard:use-selection:PRIMARY /cert:ignore"
+fi
+
+cred_cache=$(echo "$CREDENTIALS" | sed \
+	-e 's/#.*//' \
+	-e 's/^\s*//' \
+	-e 's/\s\s*/ /g' \
+	-e '/^$/d' \
+	-e "s/{D}/$DOMAIN/g" \
+	-e "s/{A}/$ADMIN/g" \
+	-e "s/{PA}/$PC_ADMIN/g"
+)
+
+case ${1:-} in
+  -D|--debug)	DEBUG=true; shift ;;
+esac
+case ${1:-} in
+  -w|--wait)	wait_for_ping=true; shift ;;
+esac
+
+case $# in
+  0)
+	list_defaults
+	list_systems
+	exit 0
+	;;
+  1)	sys=$1 ; shift ;;
+  2)	sys=$1; wanted_user=$2; shift 2 ;;
+  *)	sys=$1
+	if echo "X$2" | grep -q "^X-"
+	then
+		shift
+	else
+  		wanted_user=$2
+		shift 2
+	fi
+	;;
+esac
+
+echo "X$wanted_user" | grep -q "^X-" && usage
+
+if [ "X$wanted_user" != "X" ]
+then
+	found=$(search_sys "$sys" "$wanted_user") || {
+		echo -e "\nwarning: system $sys / $wanted_user not found, searching for system only\n" >&2
+		found=$(search_sys "$sys" "") || :
+	}
+else
+	found=$(search_sys "$sys" "") || :
+fi
+
+$DEBUG && {
+	echo "D# found='$found'" >&2
+}
+
+if [ "X$found" = "X" ]
+then
+	echo -e "\nsystem $sys not found\n" >&2
+	confirm "continue anyway?" || exit 1
+	user=$wanted_user
+	pass=
+else
+	sys=$(echo "$found" | awk '{ print $1; }')
+	user=$(echo "$found" | awk '{ print $2; }')
+	if [ "X$user" = "X$wanted_user" -o "X$wanted_user" = "X" ]
+	then
+		pass=$(echo "$found" | awk '{ print $3; }')
+	else
+		user=$wanted_user
+	fi
+	user=$(echo "$user" | sed -e "s/{D}/$DOMAIN\\\\/")
+fi
+
+
+# options (on sys definition)
+#
+echo "$sys" | grep -q "," && {
+	set -- $(echo "$sys" | tr ',' ' ')
+	sys=$1; shift
+	opts=$*
+}
+
+# strip port from sys definition
+#
+port=
+case $sys in
+  *:*)	port=":"$(echo "$sys" | cut -d':' -f2)
+  	sys=$(echo "$sys" | cut -d':' -f1)
+	;;
+esac
+
+case $user in
+  "")
+	echo "# sys: $sys$port"
+  	echo -n "domain? "; read domain; [ "X$domain" != "X" ] && domain="/d:$domain"
+  	echo -n "user? "; read user; [ "X$user" != "X" ] && user="/u:$user"
+	;;
+  *)	user="/u:$user" ;;
+esac
+
+case $pass in
+  -|"")	pass=""; disp_pass="$pass" ;;
+  *)	pass="/p:$pass"; disp_pass="/p:*******" ;;
+esac
+
+
+# add domain if needed
+case $sys in
+  *.*)	;;
+  *)	sys="$sys.$DOMAIN" ;;
+esac
+
+
+# get screen size
+#
+screen=$(xrandr 2>/dev/null | fgrep '*' | awk '{print $1}')
+width=$(echo $screen | tr 'x' ' ' | cut -d' ' -f1)
+height=$(echo $screen | tr 'x' ' ' | cut -d' ' -f2)
+
+# leave some space
+height=$(expr $height - 50)
+width=$(expr $width - 80)
+geometry="/w:$width /h:$height"
+
+#cmd="rdesktop $geometry $parms"
+cmd="xfreerdp $parms $geometry"
+echo "
+  REMOTE:	$sys$port
+  USER:		$user
+
+  CMD: $cmd $user $disp_pass /v:$sys$port $@
+"
+
+confirm "ok to connect?" || exit 1
+
+$wait_for_ping && {
+	cnt=0
+	ok=false
+	max=50
+	while :
+	do
+		ping -c 1 -w 3 $sys >/dev/null 2>&1 && { ok=true; break; }
+		cnt=$(($cnt + 1))
+		[ $cnt -gt 50 ] && break
+		echo -en "\r [$cnt/$max] waiting for $sys to be reachable ... "
+		sleep 1
+	done
+	$ok || {
+		echo -e " system $sys unreachable\n   (after $cnt tries)\n"
+		exit 1
+	}
+}
+
+
+
+if [ "X$pass" != "X" ]
+then
+	$cmd "$user" "$pass" /v:$sys$port $opts "$@" &
+else
+	$cmd "$user" /v:$sys$port $opts "$@"
+fi
+
+exit 0

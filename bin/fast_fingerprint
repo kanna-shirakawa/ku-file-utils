@@ -1,0 +1,248 @@
+#!/usr/bin/perl -w
+#
+# __copy1__
+# __copy2__
+#
+use strict qw(vars);
+
+use Digest::MD5;
+
+my $CMD		= "fast_fingerprint";
+my $CMDVER	= "1.2";
+my $CMDSTR	= "$CMD v$CMDVER (2020/08)";
+
+my $bufsize	= 1;
+my $printfname	= 0;
+my $ignore_errs	= 1;
+
+usage()	if (!@ARGV);
+
+PARMS: {
+  CASE: {
+    while (@ARGV) {
+      if ($ARGV[0] eq "-b" || $ARGV[0] eq "--bufsize") {
+	shift(@ARGV);
+	usage()	if (!@ARGV);
+	$bufsize = shift(@ARGV);
+	last CASE;
+      }
+      if ($ARGV[0] eq "-l" || $ARGV[0] eq "--long") {
+    	shift(@ARGV);
+	$printfname = 1;
+	last CASE;
+      }
+      if ($ARGV[0] eq "-e" || $ARGV[0] eq "--errors") {
+        shift(@ARGV);
+      	$ignore_errs = 0;
+	last CASE;
+      }
+      if ($ARGV[0] eq "-t" || $ARGV[0] eq "--timestamp") {
+	print( fast_file_fingerprint( '--timestamp' ), "\n" );
+	exit( 0 );
+      }
+      last PARMS	if ($ARGV[0] eq "--");
+      usage()		if ($ARGV[0] =~ /^-/);
+      last PARMS;
+    }
+  }
+}
+
+usage()	if (!@ARGV);
+
+my $n_args	= scalar(@ARGV);
+my $status	= 0;
+
+if ($n_args > 1) {
+	$printfname	= 1;
+} else {	
+	$ignore_errs	= 0;
+}
+
+my $file;
+my $md5;
+
+foreach $file (@ARGV) {
+	$md5	= fast_file_fingerprint( $file, $bufsize );
+
+	if (defined $md5) {
+		if ($printfname) {
+			print( $md5, " ", $file, "\n" )	if (defined $md5);
+		} else {
+			print( $md5, "\n" );
+		}
+	} else {
+		if (!$ignore_errs) {
+			printf( STDERR "$CMD: $file: $!\n" );
+			$status = 1;
+		}
+	}
+}
+exit( $status );
+
+
+
+
+
+sub usage
+{
+	die( "
+== $CMDSTR == computes fast fingerprints of file(s) ==
+
+warning: this util does not read the whole contente of files, only a small
+number of blocks, the md5 fingerprint is very distinctive, but not accurate
+as a whole-file digest (ie like as returned by md5sum command)
+
+usage:	$CMD [options] file(s)...
+	$CMD [--timestamp]
+
+options:
+
+ -b|--bufsize N
+ 	set bufsize (the size of 3 blocks used to compute the md5
+	fingerprint) to N Kb, default is $bufsize
+ -l|--long
+ 	print filename after fingerprint; filenames are always printed
+	if there is more than one file on argument list
+ -t|--timestamp
+ 	print current command release timestamp (seconds since the
+	epoch) and quit; the time when the algo used to compute the
+	fingerprint was changed; usefull for invalidating old
+	fingerprints, if needed
+ -e|--errors
+ 	usually errors, like directories in argument list, not readable
+	files, etc, are silently ignored if multiple arguments are
+	requested; the command will exit with error code != 0 if any
+	error occurs and has only one file as argument; with -e option
+	this happens for multiple files, too
+\n" );
+}
+
+# THE CODE BELOW IS COPIED AS-IS FROM:
+#
+# /lib/ku-base/fast_file_fingerprint.pl (perl function)
+
+my $__fast_file_fingerprint_version	= "1.1 (2020/01)";
+my $__fast_file_fingerprint_timestamp	= 1575846666;
+
+sub fast_file_fingerprint
+{
+	my ($IFILE,$bufsize)	= @_;
+
+	if (!defined $IFILE || scalar(@_) > 2) {
+		die fast_file_fingerprint_usage();
+	}
+
+	return $__fast_file_fingerprint_timestamp	if ($IFILE eq "--timestamp");
+
+	$bufsize	= 1	if (!defined $bufsize);
+	$bufsize	*= 1024;
+
+	my $sizelimit	= 3.1 * $bufsize;
+	my @stats;
+	my $buf;
+	my $offset;
+	my $cnt;
+	my $md5		= new Digest::MD5;
+
+	@stats	= stat( $IFILE );
+
+	open( IFILE, "<$IFILE" ) or return;
+	$md5->reset();
+
+	if ($stats[7] < $sizelimit) {
+		$md5->addfile(IFILE);
+	} else {
+		# first $bufsize bytes
+		#
+		$cnt = read( IFILE, $buf, $bufsize ) or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		# middle
+		#
+		$offset = ($stats[7] - $bufsize) / 2;
+		seek( IFILE, $offset, 0 )		or return;
+		$cnt = read( IFILE, $buf, $bufsize )	or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		# at end
+		#
+		$offset = $bufsize * -1;
+		seek( IFILE, $offset, 2 )		or return;
+		$cnt = read( IFILE, $buf, $bufsize )	or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		$md5->add($stats[7]);
+	}
+	close( IFILE ) or return;
+
+	return	$md5->hexdigest();
+}
+
+
+sub fast_file_fingerprint_usage
+{
+	return "
+error, wrong parms
+
+USAGE:
+
+	use Digest::MD5;
+
+	fast_file_fingerprint( inputfile [, bufsize_in_Kb] )
+	fast_file_fingerprint( '--timestamp' )
+
+   	print fast_file_fingerprint_help();
+";
+}
+
+sub fast_file_fingerprint_help
+{
+	my $version	= "1.0";
+	my $date	= "2019/12";
+
+	return "
+== fast_file_fingerprint v.$version ($date) ==
+
+computes a \"smart\" md5 fingerprint of a file, using this algo:
+
+to avoid reading the whole file the program reads only 3 blocks of 1Kb,
+at beginning, at end, and in the middle, for a total of max 3Kb read
+each file
+
+the md5 fingerprint is then generated using the concatenation of the
+3 blocks above, plus the file size to add more precision
+
+if the actual filesize is less then the 3 blocks, then the whole file
+will be read instead, so the md5 is computed in the usual way
+
+the blocksize can be changed using the second parm, in Kb
+
+this fingerprint is not accurate as the whole file was used, but will
+suffice for most applications that needs quick fingerprinting large files
+
+returns undefined if the file does not exists, cannot be read or any
+error reading/seeking
+
+to avoid using an old fingerprint (one generated in the past, when
+a different fast algo was used, ie by a previous version of this
+function) we provide a timestamp (seconds since the epoch) of the
+date when this version of this function was released; call this
+function with '--timestamp' as filename for it
+
+you can compare your saved fingerprints age (if you have this
+option) and invalidate them if needed; ie, if I save a list of
+fingerprints in a file, then can compare the last-changed date
+of that file:
+
+ my \@stats = stat( \$listfile );
+ if (\$stats[9] < fast_file_fingerprint('--timestamp')) {
+ 	....INVALIDATE...
+ }
+
+";
+}
+
+

@@ -1,0 +1,394 @@
+#!/bin/bash
+#
+# __COPY1__
+# __COPY2__
+#
+CMD=$(basename "$0")
+CMDVER="2.12"
+CMDSTR="$CMD v$CMDVER (2024-04-10)"
+
+
+usage()
+{
+	echo "
+== $CMDSTR == verbatim copy a source directory to another (rsync frontend) ==
+
+usage: $CMD [options] sourcedir targetdir [rsync_options]
+
+options:
+
+  --win			use windows behaviour (no owner, group, perms, ignorecase exclusions)
+  --fat			use fat/vfat parms (as --win and no links support)
+  --xf file		get exclusion list from file (with ignorecase if --win)
+  -A|--all		no exclusions (disable default --clean)
+  -C|--clean		add more exclusions (DEFAULT; usefull for clean backups, see below)
+  -B|--backup		backup mode (implies --clean)
+  --nodelete		works in 'add' mode, the files/dirs in the target dir that are not
+  			present in source dir will not be deleted
+  -n|--dry-run		don't do nothing (dummy run)
+  -c|--checksum		compare using checksums instead of file time/size
+  -f			force mirror even if source and target dir names differs
+  -q|--quiet		be quiet
+  -D|--debug		debug messages
+
+extended options:
+  -t|--timeout time	kills rsync task after 'time'; see 'timeout' command for details
+  --include-sysfs	don't exclude sysfs directories (proc/*, sys/*, dev/*, use it when
+  			in your directory branch there are such dir names that are NOT the
+			system filesystem)
+  -u|--user ssh_user	use this user for ssh connection
+  --np			no perms
+  --nt			no times
+  --xattrs		cls & xattrs in root mode (default: $f_xattrs)
+  --nx			no acls & xattrs
+
+* WARNING! carefully check source and target names, this command copy verbatim, so
+  it's destructive! (if you don't use --nodelete option)
+
+* you can append any rsync option after dirnames, but you cannot override the builtin ones
+  (hardwired in this command); is still usefull for passing, for example, --exclude options
+
+* builtin exclusions:
+$std_exclusions
+* sysfs exclusions (disable with --include-sysfs):
+$sysfs_exclusions
+* windows mode exclusions (--win option):
+$win_exclusions
+* extended exclusions (--clean option):
+$clean_exclusions
+* for verbatim backups you may want to append rsync options --delete-excluded,
+  --inplace, --one-file-system
+" >&2
+
+	[ $# != 0 ] && echo -e "\nerror: $*\n" >&2
+
+	exit 1
+}
+
+cleanup()
+{
+	trap "" 1 2 3 ERR EXIT
+	rm -f $tmpex
+	trap 1 2 3 ERR EXIT
+	return 0
+}
+
+
+windowize_filename()
+{
+	$DEBUG && echo "D>  windowize_filename '$1'" >&2
+
+	$is_windows && {
+		echo "$1" | tr '[A-Z]' '[a-z]' | sed -e 's/[a-z]/[&\u&]/g'
+		return 0
+	}
+	echo "$1"
+}
+
+
+
+#	(MAIN)
+
+rsync="rsync"
+ssh_parms="--blocking-io"
+to=
+dummy=false
+timeout=
+
+win_parms="-rlt"
+fat_parms="-L"
+unix_parms="-rl"
+unix_root_parms="-a --hard-links"
+unix_perms_parm="-p"
+unix_times_parm="-t"
+unix_xattrs_parm="--acls --xattrs"
+verbose_parms="-v --progress"
+verbatim_parms="--delete"
+common_parms="--no-whole-file"
+modwin_parms="--modify-window=20"
+
+is_windows=false
+is_fat=false
+checksum=
+f_force=false
+f_verbose=true
+f_include_sysfs=false
+f_clean_exclusions=true
+f_backup_mode=true
+f_xattrs=false
+DEBUG=false
+sshuser=
+xf_files=
+tmpex=
+
+std_exclusions="
+	*.swp *~ .gvfs *.part lost+found /@*
+"
+sysfs_exclusions="
+	proc/* sys/* dev/*
+"
+clean_exclusions="
+	tmp/* temp/* cache/* temporary*/* *.cache *.tmp *.lock
+"
+win_exclusions="
+	recycler/* thumbs.db pagefile.sys *avg*vault* parent.lock
+	ntuser.dat ntuser.dat.log usrclass.dat usrclass.dat.log
+	google/chrome/user*data/default/current*
+	google/chrome/user*data/default/extension*/lock
+	dati*applicazioni/macromedia/flash*player updater/updater.log
+"
+ 
+
+while [ $# != 0 ]
+do
+  case "$1" in
+    --win)		is_windows=true ;;
+    --fat)		is_windows=true ; is_fat=true ;;
+    --np)		unix_perms_parm= ;;
+    --nt)		unix_times_parm= ;;
+    --xattrs)		f_xattrs=true ;;
+    --nx)		f_xattrs=false ;;
+    -n|--dry-run)	rsync="$rsync -n" ; dummy=true ;;
+    -c|--checksum)	rsync="$rsync -c" ;;
+    -D|--debug)		DEBUG=true ;;
+    -A|--all)		f_clean_exclusions=false ;;
+    -C|--clean)		f_clean_exclusions=true ;;
+    -B|--backup)	f_clean_exclusions=true ; f_backup_mode=true ;;
+    --nodelete)		verbatim_parms= ;;
+    --include-sysfs)	f_include_sysfs=true ;;
+    -f|--force)		f_force=true ;;
+    -q|--quiet)		f_verbose=false ;;
+    -t|--timeout)
+	shift
+	[ $# == 0 ] && usage "timeout option requires an argument"
+	timeout=$1
+	;;
+    -u|--user)
+	shift
+	[ $# == 0 ] && usage "user option requires an argument"
+	sshuser=$1
+	;;
+    --xf)
+    	shift
+	[ $# == 0 ] && usage "xf option requires an argument"
+	xf_files="$xf_files $1"
+	;;
+
+    ""|-*)	usage "unknown option '$1'" ;;
+    *)		break ;;
+  esac
+  shift
+done
+
+
+[ $# -lt 2 ] && usage
+fromdir="$1"
+target="$2"
+shift 2		# the remaining args are passed verbatim to rsync
+args="$@"
+
+#	rsync server?
+#
+case "$fromdir$target" in
+	*::*)	;;
+	*)	rsync="$rsync $ssh_parms" ;;
+esac
+
+
+#	check if target have the same name
+#
+dir_orig=$(basename "$fromdir"); dir_orig=${dir_orig/*::/}
+dit_target=$(basename "$target")
+
+[ "$dir_orig" != "$dit_target" ] && {
+	# same path? then automatically append directory name
+	#
+	mode="abort"
+	dir1=$(dirname "$fromdir"); dir1=$(basename "$dir1")
+	dir2=$(dirname "$target");  dir2=$(basename "$dir2")
+
+	if $f_force
+	then
+		mode="overwrite"
+	else
+		if [ "$dir1" = "$dir2" -a "$dir1" != "/" ]
+		then
+			mode="append"
+		fi
+	fi
+
+	case "$mode" in
+		append)
+			echo "$CMD: warning, appending $dir_orig to target" >&2
+			target="$target/$dir_orig"
+			f_same=true
+			;;
+		overwrite)
+			echo "$CMD: warning, path differs, using '-f' flag to force mirror"
+			f_same=true
+			;;
+		*)
+			echo "$CMD: error, original and target have different paths, abort" >&2
+			exit 1
+			;;
+	esac
+}
+
+
+#	try to determine if target is local and is a *fat fs
+#
+$is_fat || {
+	case $target in
+		*:*)	# remote, don't do anything
+	    	;;
+	    *)		# local, try to check ...
+	    	[ -d "$target" ] || mkdir "$target"	# abort on error
+	    	dev=$(df -k "$target" 2>/dev/null| tail -1 | sed -e 's/ .*//')
+		fstype=$(egrep "^$dev " /proc/mounts | awk '{ print $3 }')
+		case $fstype in
+			*fat)	echo "$CMD: warning, target filesystem is '$fstype', forcing FAT mode"
+				is_fat=true
+				is_windows=true
+				;;
+		esac
+		;;
+	esac
+}
+
+
+
+
+# build rsync command ...
+#
+rsync="$rsync $common_parms $verbatim_parms"
+
+$is_windows && {
+	echo "$CMD: notice, using windows beheaviour " $win_parms >&2
+	rsync="$rsync $win_parms"
+}
+$is_fat && {
+	echo "$CMD: notice, using fat/vfat beheaviour " $fat_parms >&2
+	rsync="$rsync $fat_parms"
+}
+
+if [ $is_windows != "true" -a $is_fat != "true" ]
+then
+	if [ $(id -u) = 0 ]
+	then
+		echo "$CMD: notice, using unix root beheaviour" >&2
+		rsync="$rsync $unix_root_parms $unix_perms_parm $unix_times_par"
+		$f_xattrs && rsync="$rsync $unix_xattrs_parm"
+	else
+		rsync="$rsync $unix_parms $unix_perms_parm $unix_times_parm"
+	fi
+fi
+
+$f_verbose && {
+	rsync="$rsync $verbose_parms"
+}
+
+$f_backup_mode || {
+	rsync="$rsync --delete-after"
+}
+
+$f_clean_exclusions && {
+	common_parms="$common_parms --omit-dir-times"
+}
+
+echo "X$args" | grep -q -- "--modify-window" || {
+	rsync="$rsync $modwin_parms"
+}
+
+$dummy && echo "$CMD: notice, running in DUMMY mode" >&2
+
+
+# from here disable shell expansion to avoid wrong parms evaluation
+#
+set -f
+
+
+# build exclusion tempfile
+#
+tmpex=$(mktemp /tmp/${CMD}-exclusions-XXXXXX) || exit $?
+rsync="$rsync --exclude-from=$tmpex"
+
+trap 'echo -e "\n*INTR*\n"; exit 255' 1 2 3
+trap 'echo -e "\n$0: unexpected error $? at $LINENO\n"' ERR
+trap 'cleanup' EXIT
+
+:>$tmpex
+
+for item in $std_exclusions
+do
+	echo "$item" >>$tmpex
+done
+$f_include_sysfs || {
+	$DEBUG && echo "D> adding sysfs exclusions" >&2
+	for item in $sysfs_exclusions
+	do
+		echo "$item" >>$tmpex
+	done
+}
+$f_clean_exclusions && {
+	$DEBUG && echo "D> adding exclusions (clean)" >&2
+	for item in $clean_exclusions
+	do
+		windowize_filename $item >>$tmpex
+	done
+}
+$is_windows && {
+	$DEBUG && echo "D> adding exclusions (win)" >&2
+	for item in $win_exclusions
+	do
+		windowize_filename $item >>$tmpex
+	done
+}
+for ex in $xf_files
+do
+	[ -f $ex ] || {
+		echo "$CMD: error, exclusion file '$ex' not found" >&2
+		exit 1
+	}
+	$DEBUG && echo "D> adding exclusions (file=$ex)" >&2
+	cat $ex | while read item
+	do
+		windowize_filename "$item" >>$tmpex
+	done
+done
+
+sort -u -o $tmpex $tmpex
+$DEBUG && {
+	cp $tmpex $tmpex.debug
+	echo "D> exclusions file saved to $tmpex.debug" >&2
+}
+
+[ "X$timeout" != "X" ] && {
+	# kills with KILL signal after 2m of default signal
+	rsync="timeout -k 2m $timeout $rsync"
+}
+
+
+$DEBUG && {
+	echo "@> rsync=$rsync" >&2
+	echo "@> args=$args" >&2
+}
+
+[ "$fromdir" = "/" ] && fromdir=
+
+echo -e "\n$fromdir/ ==> $target\n"
+
+status=0
+if [ x"$sshuser" == x ]
+then
+	$rsync $args "$fromdir/" "$target" || status=$?
+else
+	$rsync $args -e "ssh -l $sshuser" "$fromdir/" "$target" || status=$?
+fi
+
+[ $status = 24 ] && status=0	# ignore vanished files (is a warning not an error)
+
+[ "X$timeout" != "X" -a $status = 124 ] && {
+	echo -e "\ntimeout error (after $timeout)\n" >&2
+}
+
+exit $status

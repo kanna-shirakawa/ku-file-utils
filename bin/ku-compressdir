@@ -1,0 +1,220 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.6"
+CMDSTR="$CMD v$CMDVER (2022-08-09)"
+
+. /lib/ku-base/echo.sh
+
+
+# (FUNCTIONS)
+
+usage()
+{
+	echo "
+usage: $CMD [options] dir(s)
+
+options:
+ --remove	remove the original dir after the compression
+ -n|--dry-run	don't do anything (show commands only)
+
+compression options:
+ --tar		uses tar         (output: dirname.tar)
+ -z|--gz	uses tar+gzip    (output: dirname.tar.gz)
+ -j|--bz2	uses tar+bzip2   (output: dirname.tar.bz2)
+ --zip		uses zip         (output: dirname.zip)
+ --7z		uses 7z          (output: dirname.7z)
+
+compression levels:
+ --fast	or --best to change the default compression level, where
+ make sense
+" >&2
+
+	show_settings
+	exit 1
+}
+
+
+show_settings()
+{
+	echo "
+current settings:
+ Compression:	$Compression
+ CompLevel:	$CompLevel
+ OutFile:	$OutFile
+ LogFile:	$LogFile
+ Command:	$Command
+"
+	return 0
+}
+
+
+
+set_commands()
+{
+	local zipflags=
+	local gzflags=
+	local tarcmd="tar cf"
+	local taropts="--totals"
+
+	case $CompLevel in
+	  fast)	zipflags="-1"; gzflags="--fast" ;;
+	  best) zipflags="-9"; gzflags="--best" ;;
+	  "")	;;
+	  *)
+	  	echo -e "\nerror: unknown comp method CompLevel='$CompLevel'\n" >&2
+		usage
+		;;
+	esac
+
+	LogFile="DIRNAME.log"
+
+	case $Compression in
+	  tar)
+	  	OutFile="DIRNAME.tar"
+		Command="$tarcmd '$OutFile' $taropts 'DIRNAME'"
+		;;
+	  zip)
+	  	OutFile="DIRNAME.zip"
+	  	Command="zip -ro $zipflags '$OutFile' 'DIRNAME'"
+		;;
+	  gz|gzip)
+		OutFile="DIRNAME.tar.gz"
+	  	Command="$tarcmd - 'DIRNAME' | gzip $gzflags >'$OutFile'"
+		;;
+	  bz2|bzip2)
+		OutFile="DIRNAME.tar.bz2"
+	  	Command="$tarcmd - $taropts 'DIRNAME' | bzip2 $gzflags >'$OutFile'"
+		;;
+	  7z)
+	  	OutFile="DIRNAME.7z"
+		Command="7z-rmo '$OutFile' 'DIRNAME'"
+		;;
+	  *)
+	  	echo -e "\nerror: unknown comp method Compression='$Compression'\n" >&2
+		usage
+		;;
+	esac
+	return 0
+}
+
+
+
+run_cmd()
+{
+	local cmd="$1"
+	local log=$(echo "$LogFile" | sed -e "s:DIRNAME:$dir:g")
+	local line=
+
+	rm -f "$log"
+	run_low_cmd || return $?
+	echo
+	return 0
+}
+
+run_low_cmd()
+{
+	local stat=
+	eval $cmd 2>&1 || {
+		stat=$?
+		echo -e "\n\nERROR $? ON $cmd\n\n"
+		echo -e "\n\nERROR $? ON $cmd\n\n" >>"$log"
+		exit $stat
+	}
+	return 0
+}
+
+
+# (MAIN)
+
+remove=false
+dummy=false
+CfgFile="/etc/$CMD.conf"
+VERBOSE=true
+COLUMNS=${COLUMNS:-`tput cols`}
+Cols=$(expr ${COLUMNS:-80} - 4)
+
+# from config file
+#
+Compression="gz"
+CompLevel=""
+
+# computed from config/options
+#
+OutFile=
+Command=
+
+set_commands
+
+while [ $# != 0 ]
+do
+	case $1 in
+	  -n|--dry-run)	dummy=true ;;
+	  --remove)	remove=true ;;
+	  -v|--verbose)	VERBOSE=true ;;
+	  -q|--quiet)	VERBOSE=false ;;
+	  -c|--config)
+	  	shift
+		[ $# = 0 ] && usage
+		[ -f "$1" ] || usage "config file '$1' not found"
+		. "$1"
+		CfgFile=$1
+		set_commands
+		;;
+	  --tar)		Compression="tar" ; set_commands ;;
+	  --zip)		Compression="zip" ; set_commands ;;
+	  -z|--gz)		Compression="gz" ; set_commands ;;
+	  -j|--bz2|--bzip2)	Compression="bz2" ; set_commands ;;
+	  --7z)			Compression="7z" ; set_commands ;;
+
+	  --fast)		CompLevel="fast" ; set_commands ;;
+	  --best)		CompLevel="best" ; set_commands ;;
+	  -*|"")	usage ;;
+	  *)		break ;;
+	esac
+	shift
+done
+
+[ $# = 0 ] && usage
+
+set_commands
+$VERBOSE && show_settings
+
+
+reference_tmp="/tmp/$CMD-$$.tmp"
+
+for dir
+do
+	cmd=$(echo "$Command" | sed -e "s:DIRNAME:$dir:g")
+	outfile=$(echo "$OutFile" | sed -e "s:DIRNAME:$dir:g")
+
+	if $dummy
+	then
+		echo " (dummy) $cmd"
+		$remove && echo " (dummy) rm -rf '$dir'"
+	else
+		# save timestamp reference, since the original dir should be removed
+		touch --reference "$dir" "$reference_tmp"
+		echo " running $cmd"
+		run_cmd "$cmd"
+		touch --reference "$reference_tmp" "$outfile" || exit $?
+		rm -f "$reference_tmp"
+
+		$remove && {
+			echo -en " removing original '$dir' ... "
+			rm -rf "$dir"
+			if [ -d "$dir" ]
+			then
+				echo "NOT OK"
+				echo "$CMD WARNING, directory not full removed"
+			else
+				echo "ok"
+			fi
+		}
+	fi
+done
+
+exit 0

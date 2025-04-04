@@ -1,0 +1,330 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.2"
+CMDSTR="$CMD v$CMDVER (2025-03-12)"
+
+set -e -u
+
+
+header_sep="=============================================================================================="
+header_min="----------------------------------------------------------------------------------------------"
+header_fmt="%-79.79s\n"
+now=$(date '+%Y-%m-%d')
+infofile=".metainfo.txt"
+
+
+usage()
+{
+	echo "== $CMDSTR == outputs disk usage summary ==
+
+usage: $CMD [options]
+
+options:
+ -c|--create	create a default $infofile if not exists
+
+ --do-content
+ --no-do-content
+ 		overrides DO_CONTENT var in infofile
+" >&2
+	exit 1
+}
+
+
+echo_header()
+{
+	printf "$header_fmt" "$header_sep"
+	printf " %-66s %s\n" "$LABEL - $TITLE" "$now"
+	printf "$header_fmt" "$header_sep"
+}
+
+echo_footer()
+{
+	echo
+	printf "$header_fmt" "$header_min"
+	echo "  made by $CMDSTR"
+	printf "$header_fmt" "$header_sep"
+}
+
+finfo()
+{
+	local out=$(ls -lsd "$1")
+	local cnt=
+	set $out
+	for cnt in 1 2 3 4 5 6
+	do
+		out=$(echo "$out" | sed -e "s/^$1  *//")
+		shift
+	done
+	echo "$out"
+}
+
+
+
+
+scan_dirs()
+{
+	ls -d .* * 2>/dev/null | while read name
+	do
+		[ -d "$name" ] || continue
+		must_ignore $name && continue
+		du -hs "$name"
+	done | while read size name
+	do
+		printf "$fmt" "$size" "$name" | fold -w 79
+	done
+	return 0
+}
+
+scan_files()
+{
+	ls -d .* * 2>/dev/null | while read name
+	do
+		[ -f "$name" ] || continue
+		must_ignore $name && continue
+		du -hs "$name"
+	done | while read size name
+	do
+		printf "$fmt" "$size" "$name" | fold -w 79
+	done
+	return 0
+}
+
+
+must_ignore()
+{
+	case $1 in
+	  .|..|$infofile)	return 0 ;;
+	  disk-usage.txt)	return 0 ;;
+	  disk-infos.txt)	return 0 ;;
+	  disk-content.txt)	return 0 ;;
+	esac
+	return 1
+}
+
+
+
+
+# (MAIN)
+
+F_create=false
+F_do_content=
+
+[ $# != 0 ] && {
+  case $1 in
+   -c|--create)		F_create=true ;;
+   --do-content)	F_do_content=true ;;
+   --no-do-content)	F_do_content=false ;;
+   *)			usage ;;
+  esac
+}
+
+# sanity checks
+#
+mountpoint . >/dev/null 2>&1 || {
+	echo >&2
+	echo "error: the current dir is not a mountpoint" >&2
+	echo >&2
+	exit 1
+}
+
+# backward compatibility for old infofile name
+#
+[ ! -f "$infofile" -a -f "__infos.txt" ] && {
+	echo -e "\nWARN:	using deprecated '__infos.txt' info file" >&2
+	echo -e "	please, rename it to '$infofile' asap\n" >&2
+	infofile="__infos.txt"
+}
+
+# main infos: label, copies, title, etc
+#
+
+LABEL= TITLE= DESC= DO_CONTENT=
+
+[ -s $infofile ] && {
+	eval $(egrep '^LABEL=|^TITLE=|^DO_CONTENT=' $infofile)
+	DESC=$(egrep -v '^LABEL=|^TITLE=|^DO_CONTENT=' $infofile)
+
+	[ "X$LABEL" = "X" ]	&& echo "** MISSING 'LABEL' VAR IN $infofile, PLEASE EDIT"
+	[ "X$TITLE" = "X" ]	&& echo "** MISSING 'TITLE' VAR IN $infofile, PLEASE EDIT"
+	[ "X$DESC" = "X" ]	&& {
+		echo "** PLEASE EDIT $infofile AND PLACE YOUR FREE DESCRIPTION"
+		echo "** AFTER THE VARIABLES"
+	}
+
+	# overrides DO_CONTENT var (if any)?
+	#
+	case $F_do_content in
+	  true)		DO_CONTENT=true ;;
+	  false)	DO_CONTENT=false ;;
+	  *)		DO_CONTENT=$(echo "$DO_CONTENT" | tr [A-Z] [a-z]) ;;
+	esac
+
+	case $DO_CONTENT in
+	  1|y|yes|true)		DO_CONTENT=true ;;
+	  *)			DO_CONTENT=false ;; 
+	esac
+}
+
+LABEL=${LABEL:-(missing LABEL)}
+TITLE=${TITLE:-(missing TITLE)}
+DESC=${DESC:-(missing DESC)}
+
+[ -s $infofile ] || {
+	if $F_create
+	then
+		echo "WARNING: AN EMTPY LABEL FILE $infofile WAS CREATED"
+		echo "PLEASE EDIT IT WITH CORRECT INFOS"
+		echo "LABEL=\"$LABEL\""		>$infofile
+		echo "TITLE=\"$DESC\""		>>$infofile
+		echo "$DESC"			>>$infofile
+	else
+		echo >&2
+		echo "error: infofile '$infofile' doesn't exists" >&2
+		echo "please manually create one, or use --create option" >&2
+		echo "(or you are in the wrong dir, you should launch thist command" >&2
+		echo "from the mountpoint of the external disk)" >&2
+		echo >&2
+		exit 1
+	fi
+}
+echo
+echo_header
+echo
+
+rm -f disk-infos.txt disk-usage.txt disk-content.txt
+
+
+out="disk-infos.txt"
+echo -n " updating $out ... "
+echo_header			>$out
+echo "$DESC"			>>$out
+echo_footer			>>$out
+echo "ok"
+
+
+out="disk-usage.txt"
+fmt="%8s %s\n"
+hfmt="%-8.8s %-70.70s\n"
+
+echo -n " updating $out ... "
+echo_header >$out
+echo >>$out
+
+buf=$(scan_dirs)
+[ "X$buf" != "X" ] && {
+	echo -e "DIRS:\n$buf\n" >>$out
+}
+
+buf=$(scan_files)
+[ "X$buf" != "X" ] && {
+	echo -e "FILES:\n$buf\n" >>$out
+}
+
+
+#Filesystem      Size  Used Avail Use% Mounted on
+#/dev/sda1        30G  1.4G   27G   5% /
+(
+  set $(df -h . | tail -1)
+  printf "$hfmt" " $header_min" "$header_min"
+  printf "$fmt" "$3" "TOTAL USED ($5)"
+  echo
+  printf "$fmt" "$2" "Disk size"
+  printf "$fmt" "$4" "Free space"
+
+) >>$out
+
+LABEL= TYPE= UUID=
+partinfo=$(fgrep " $(pwd) " /proc/mounts | cut -d' ' -f1)
+partinfo=$(blkid $partinfo 2>/dev/null) && {
+	partinfo=$(echo "$partinfo" | sed -e 's/^[^:]*: *//')
+	eval $partinfo
+}
+
+(
+	echo
+	printf "%-79.79s\n" "--[extra infos]$header_min"
+	echo
+	echo "$partinfo" | fold -s -w 76 | while read line
+	do
+		echo "  $line"
+	done
+) >>$out
+
+echo_footer >>$out
+
+echo "ok"
+echo
+
+
+$DO_CONTENT || exit 0
+
+
+out="disk-content.txt"
+fmt_f="%8s %s\n"
+fmt_d="%22s %s\n"
+fdetail="%5d D %6d F %6s"
+
+echo -n " updating $out ... "
+echo_header >$out
+
+# files
+#
+ls -td .* * 2>/dev/null | while read name
+do
+	must_ignore $name && continue
+	[ -d "$name" ] && continue
+
+	stats=$(ls -lh "$name" | cut -d' ' -f5)
+	finfo=$(finfo "$name")
+	printf "$fmt_f" "$stats" "$finfo"
+done >>"$out"
+
+# level 0 dirs
+#
+ls -d .* * 2>/dev/null | while read name
+do
+	must_ignore $name && continue
+	[ -d "$name" ] || continue
+
+	echo
+	echo "$name:"
+	echo
+
+	(
+	  cd "$name"
+
+	  ls -td .* * 2>/dev/null | while read subname
+	  do
+		[ -d "$subname" ] && continue
+		must_ignore $name && continue
+
+		stats=$(ls -lh "$subname" | cut -d' ' -f5)
+		finfo=$(finfo "$subname")
+		printf "$fmt_f" "$stats" "$finfo"
+	  done
+
+	  ls -t .* * 2>/dev/null | while read subname
+	  do
+		[ -d "$subname" ] || continue
+		must_ignore $name && continue
+
+		d_cnt=$(find "$subname" -type d | wc -l)
+		f_cnt=$(find "$subname" -type f | wc -l)
+		size=$(du -hs "$subname" | sed -e 's/\s.*//')
+		stats=$(printf "$fdetail" $d_cnt $f_cnt $size)
+		finfo=$(finfo "$subname")
+		printf "$fmt_d" "$stats" "$finfo"
+	  done
+	)
+done >>"$out"
+
+echo_footer >>$out
+
+echo "ok"
+
+echo
+exit 0

@@ -1,0 +1,99 @@
+#!/bin/bash
+#
+# __COPY1__
+# __COPY2__
+#
+CMD=$(basename "$0")
+CMDVER="1.3"
+CMDSTR="$CMD v$CMDVER (2022-07-17)"
+
+set -e -u
+
+
+usage()
+{
+	echo "
+== $CMDSTR == disk usage, orderded by size ==
+
+usage: $CMD [files/dirs]
+
+- calls 'du' command in summary mode (-s option) on given
+  arguments or all files/dirs in the current directory if any
+
+- sorts output by usage, ascending, and print results in human
+  readable form
+
+- in the args list (or * in curr dir if any), ignores symlinks and
+  directories that belongs to different filesystems (mountpoints, and
+  uses -x du option, too)
+"
+	exit 1
+}
+
+
+echocr()
+{
+	/bin/echo -en "\r\033[K$@\r"
+}
+
+# print size in Mega or Giga, with 1 decimal precision
+# (used bc to do this, but is not available on some embedded systems)
+#
+print_size()
+{
+	echo $1 $2 | perl -e '
+		$line = <>; chomp($line);
+		($unit,$size) = split( " ", $line );
+		if ($unit eq "M") {
+			printf( "%.1f\n", $size / 1024 );
+		} else {
+			printf( "%.1f\n", $size / 1048576 );
+		}
+	'
+}
+
+# (MAIN)
+
+case ${1:-} in
+ -*) usage ;;
+esac
+
+cvt_mega=1024
+cvt_giga=1048576
+
+
+if [ $# != 0 ]
+then
+	ls -d "$@"
+else
+	ls -d *
+fi | while read dir
+do
+	[ -L "$dir" ] && continue
+	mountpoint "$dir" >/dev/null 2>&1 && continue
+	echocr " scanning $dir ..." >&2
+	du -ksx "$dir"
+	echocr "" >&2
+done | sort -g | while read size dir
+do
+	if [ $size -gt $cvt_giga ]
+	then
+		unit="G"; size=$(print_size $unit $size)
+	elif [ $size -gt $cvt_mega ]
+	then
+		unit="M"; size=$(print_size $unit $size)
+	else
+		unit="K"
+	fi
+
+	printf "%8.1f%s %s\n" "$size" "$unit" "$dir"
+done
+
+exit 0
+
+
+# HISTORY
+#
+# 1.3 2022-07-17 lc
+# - on some embedded systems 'bc' command is not available; replaced with
+#   a dedicated embedded perl script

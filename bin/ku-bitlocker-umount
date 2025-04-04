@@ -1,0 +1,136 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.0"
+CMDSTR="$CMD v$CMDVER (2025-02-02)"
+
+usage()
+{
+	echo "
+== $CMDSTR - umounts a BitLocker device mounted by ku-bitlocker-mount ==
+
+usage: $CMD mountpoint
+
+options:
+  -v|--verbose		be verbose
+  -q|--quiet		be quiet
+  -x|--execute		do things
+  -n|--dry-run		dry-run
+  -h|--help		show help
+  -D[n]|--debug[=n]	set debug, optionally with level
+  --			stop processing options
+" >&2
+	[ $# != 0 ] && echo -e "\n$@\n" >&2
+	exit 127
+}
+
+
+cleanup()
+{
+	trap "" 1 2 3 ERR EXIT
+	trap 1 2 3 ERR EXIT
+	return 0
+}
+
+pdebug()
+{
+	$DEBUG && echo -e "#D ${FUNCNAME[1]}() $*" >&2
+	return 0
+}
+
+
+
+run_cmd()
+{
+	if $F_EXEC
+	then
+		echo "# $*"
+		"$@" || return $?
+	else
+		echo "# (dummy) $*"
+	fi
+	return 0
+}
+
+
+
+# (MAIN)
+
+trap 'echo -e "\n*INTR*\n"; exit 255' 1 2 3
+trap 'echo -e "\nunexpected error $? at $LINENO\n"' ERR
+trap 'cleanup' EXIT
+set -e
+set -u
+
+VERBOSE=${VERBOSE:-true}
+DEBUG=${DEBUG:-false}
+DBGLEVEL=${DBGLEVEL:-0}
+F_EXEC=${F_EXEC:-true}
+fuse_tmpdir=
+dummycmd=
+
+declare -A dislocker_opts
+dislocker_nopts=0
+
+
+
+# 1. get our options
+#
+while [ $# != 0 ]
+do
+  case $1 in
+    -h|--help)		usage ;;
+    -v|--verbose)	VERBOSE=true ;;
+    -x|--execute)	F_EXEC=true ;;
+    -n|--dry-run)	F_EXEC=false ;;
+    -q|--quiet)		VERBOSE=false ;;
+    -D|--debug)		DEBUG=true ;;
+    -D[0-9]|--debug=[0-9])
+    			DEBUG=true; DBGLEVEL=$(echo "X$1" | sed -e 's/^X-D//' -e 's/^X--debug=//')
+			;;
+    --)			break ;;
+    -*|"")		usage "unknown option '$1'" ;;
+
+    # break on any non-option arg
+    *)			break ;;
+  esac
+  shift
+done
+
+[ $# != 1 ] && {
+	usage "must provide one parameter: mountpoint"
+}
+mountpoint=$1
+
+
+# 2. search fuse tempdir used to unencrypt bitlocker partition
+#
+fuse_tmpdir=$(mount | grep "\s$mountpoint\s" | cut -d' ' -f1)
+[ "X$fuse_tmpdir" = "X" ] && {
+	echo -e "\n$CMD error: cannot find fuse tempdir (/tmp/ku-bitlocker-mount-NNN)\n"
+	exit 1
+}
+fuse_tmpdir=$(echo "$fuse_tmpdir" | sed -e 's#/dislocker-file##')
+
+echo -e "\n fuse bitlocker virtual file is '$fuse_tmpdir'\n"
+
+
+# 3. umount top level partition
+#
+run_cmd umount $mountpoint
+
+# 4. umount dislocker partition
+#
+run_cmd umount $fuse_tmpdir
+
+
+# 5. cleanup
+#
+run_cmd rmdir $fuse_tmpdir
+
+echo
+
+exit 0

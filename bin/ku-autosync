@@ -1,0 +1,648 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.8"
+CMDSTR="$CMD v.$CMDVER (2021/02)"
+
+export VERBOSE="true"
+export DEBUG="false"
+export AUTOSNAP_DEV=
+export AUTOSNAP_NAME="${CMD}-tmp$$"
+export PID=
+
+export PATH=$PATH:/sbin:/usr/sbin
+
+
+. /lib/ku-base/log.sh
+LOGFILE=${LOGFILE:-"/var/log/$CMD.log"}
+LOGSYSLOG="true"
+
+KU_LOCKFILE="/var/lock/$CMD"
+. /lib/ku-base/lock.sh
+
+set -e -u
+
+
+# (MAIN)
+usage()
+{
+	echo "
+== $CMDSTR == automated sync fs/blockdevs from table list ==
+
+usage:	$CMD [options] { -a | tag(s) }
+	$CMD { -t | --list-tags }
+	$CMD { -L | --list-conf }
+
+options:
+ -c | --config file	uses 'file' as synctable source (default: $sync_table)
+ -l | --list		list lines matching tag(s)
+ -q | --quiet		quiet (turn off verbose)
+ -x | --execute		execute (default: dry-run)
+ -D | --debug		debug
+
+default options (kept for compatibility)
+ -v | --verbose		verbose
+ -n | --dry-tun		dry-run
+" >&2
+	exit 1
+}
+
+dummy_cleanup()
+{
+	trap '' 1 2 3 ERR EXIT
+	rm -rf ${tmpbase}-*
+	trap 1 2 3 ERR EXIT
+	return 0
+}
+
+
+cleanup()
+{
+	trap '' 1 2 3 ERR EXIT
+
+	set +e
+	$VERBOSE && echo " cleaning up, please wait ..."
+	$DEBUG && set -x
+	mylog "  exiting, performing cleanup ..."
+	umount $automount_from 2>/dev/null
+	umount $automount_dest 2>/dev/null
+	autosnap_remove
+	rm -rf ${tmpbase}-*
+	rmdir $automount_from $automount_dest 2>/dev/null
+	[ "$CurrDestSys" != "" ] && {
+		ssh $CurrDestSys "umount $automount_dest 2>/dev/null; rmdir $automount_dest 2>/dev/null"
+	}
+	mylog "  cleanup done"
+	ku_lock_remove
+	trap 1 2 3 ERR EXIT
+	return 0
+}
+
+mylog()
+{
+	$f_list && echo -e "$@" || ku_log "$@"
+}
+
+real_link()
+{
+	file=$1
+	out=
+	nfile=
+
+	[ -L "$file" ] || {
+		echo "$file"
+		return 0
+	}
+
+	while :
+	do
+		out=`ls -ls "$file"`
+		echo "$out" | fgrep -q " -> " || break
+		nfile=`echo "$out" | sed -e 's/.* -> //'`
+		###echo ">>> out='$out'" >&2
+		case $nfile in
+		  /*) ;;
+		  *) nfile="`dirname $file`/$nfile" ;;
+		esac
+		###echo ">>> file='$nfile'" >&2
+		file=$nfile
+	done
+	echo "$file"
+}
+
+parse_sync_table()
+{
+	local inputfile=$1 ; shift
+	local req_sys="$*"
+
+	local stype=
+	local tag=
+	local from=
+	local dest=
+	local otherparms=
+	local tmpinput=`mktemp ${tmpbase}-XXXXX` || return $?
+	local sys=
+	local from_sys=
+	local real_from=
+	local real_dest=
+	local old_tag=
+	local global_status=0
+
+	[ -f $inputfile ] || return 1
+
+	mylog " sync_table: '$inputfile'"
+
+	sed -e 's/#.*//' $inputfile >$tmpinput
+
+	exec 9<&0 <$tmpinput
+	while read stype tag from dest otherparms
+	do
+		case $tag in
+		  "")	continue
+		  	;;
+		  *)	do_it=false
+			if $all_systems
+			then
+				do_it=true
+			else
+				is_in_list "$tag" $req_sys && do_it=true
+			fi
+			;;
+		esac
+		$do_it || continue
+
+		$VERBOSE && {
+			if [ "$tag" != "$old_tag" ]
+		    	then
+		    		if $f_list
+				then
+					printf "\n%-78.78s\n#\n" "# == $tag ==================================================================================================="
+				else
+					mylog ""
+					mylog $(printf "%-78.78s" "== $tag ===================================================================================================")
+					mylog ""
+				fi
+				old_tag=$tag
+				CurrSnapshotSize=$DefaultSnapshotSize
+			fi
+		}
+
+
+		# INFO/REMARKS?
+		#
+		case $stype in
+			[iI]*)
+				if $f_list
+				then
+					$VERBOSE && echo "#	$from $dest $otherparms"
+				else
+		   			mylog "	$from $dest $otherparms"
+				fi
+				continue
+				;;
+			snap|s*size)
+				CurrSnapshotSize=$from
+		   		mylog "	snapshot size set to $CurrSnapshotSize"
+				continue
+				;;
+		esac
+
+		# expand vars
+		eval from=${from:-""}
+		eval dest=${dest:-""}
+
+		$f_list && {
+			printf "%-1.1s %-10s %-30s %-30s %s\n" \
+				"$stype" "$tag" "$from" "$dest" "$otherparms"
+			continue
+		}
+
+		case $from in
+		  *:*)
+			local from_sys=`echo $from | sed -e 's/:.*//'`
+			local from=`echo $from | sed -e 's/.*://'`
+			;;
+		  *)
+		  	real_from=`real_link "$from"`
+			[ -b "$real_from" -o -f "$real_from" -o -d "$real_from" ] || {
+				echo "'$from' is not a local file, dir or local block device" >&2
+				continue
+			}
+			;;
+		esac
+
+		case $dest in
+		  *::*)
+			local CurrDestSys=`echo $dest | sed -e 's/:.*//'`
+			local dest=`echo $dest | sed -e 's/.*://'`
+			dest=":$dest"	# will use rsync module
+			;;
+		  *:*)
+			local CurrDestSys=`echo $dest | sed -e 's/:.*//'`
+			local dest=`echo $dest | sed -e 's/.*://'`
+			;;
+		  *)
+		  	real_dest=`real_link "$dest"`
+			[ -b "$real_dest" -o -f "$real_dest" -o -d "$real_dest" ] || {
+				echo "'$dest' is not a local file, dir or local block device" >&2
+				continue
+			}
+			;;
+		esac
+
+		mylog " SYNC tag=$tag from_sys=$from_sys from=$from dest_sys=$CurrDestSys dest=$dest args=$otherparms"
+
+		for sys in $from_sys $CurrDestSys
+		do
+			ping -c 1 -w 5 $sys >/dev/null 2>/dev/null || {
+				mylog "  $sys unreachable, skipped"
+				continue
+			}
+
+			case $stype in
+			  [mM]*) do_mirror $tag "$from_sys" $from "$CurrDestSys" $dest $otherparms </dev/null || global_status=$?
+				;;
+			  [bB]*) do_block $tag "$from_sys" $from "$CurrDestSys" $dest $otherparms </dev/null || global_status=$?
+				;;
+			  *)	mylog "  unknown sync type '$stype'"
+				;;
+			esac
+		done
+	done
+	exec 0<&9 9<&-
+
+	return $global_status
+
+} # parse_sync_table()
+
+
+
+is_in_list()
+{
+	local string=$1	; shift
+	local str=
+	for str in $*
+	do
+		[ X"$string" == X"$str" ] && return 0
+	done
+	return 1
+}
+
+
+do_mirror()
+{
+	local tag=$1
+	local from_sys=$2
+	local from=$3
+	local dest_sys=$4
+	local dest=$5
+	shift 5
+
+	local dummy=
+	local do_from_automount=false
+	local do_dest_automount=false
+	local status=
+	local mirror_status=0
+	local mirror_from=$from
+	local mirror_dest=$dest
+	local logfile=
+	local stat=
+	local use_rsync_module=false
+
+	$f_exec || dummy="-n"
+
+	[ "$from_sys" != "" ] && mirror_from="$from_sys:$mirror_from"
+	[ "$dest_sys" != "" ] && mirror_dest="$dest_sys:$mirror_dest"
+
+	case $dest in
+	  :*)	dest=$(echo "$dest" | sed -e 's/^://')
+	  	use_rsync_module=true
+		;;
+	esac
+
+	[ -b `real_link "$dest"` ] && {
+		do_dest_automount=true
+	}
+
+	$do_dest_automount && {
+	  	if [ "$dest_sys" != "" ]
+		then
+			mylog "  $dest_sys: automounting $dest on $automount_dest"
+			status=`ssh $dest_sys "[ -d $automount_dest ] || mkdir $automount_dest ;
+				mountpoint $automount_dest >/dev/null && echo FAIL && exit 1 ;
+				mount -oloop,noatime $dest $automount_dest || echo FAIL
+				"`
+			[ "$status" == "FAIL" ] && {
+				mylog "failed to automount $dest on system $dest_sys"
+				return 1
+			}
+			mirror_dest="$dest_sys:$automount_dest"
+		else
+			mylog "  automounting $dest on $automount_dest"
+			[ -d $automount_dest ] || mkdir $automount_dest
+			mountpoint $automount_dest >/dev/null && {
+				mylog "failed to automount $dest, $automount_dest already is mountpoint"
+				return 1
+			}
+			mount -oloop,noatime $dest $automount_dest || {
+				mylog "failed to automount $dest"
+				return 1
+			}
+			mirror_dest=$automount_dest
+		fi
+	}
+
+	safe_lvscan | grep ACTIVE | grep -q "'$from'" && {
+		mylog " from '$from' is LVM, autosnapping"
+	  	autosnap_create $from || return $?
+		real_from="$AUTOSNAP_DEV/$AUTOSNAP_NAME"
+		do_from_automount=true
+	}
+
+	$do_from_automount && {
+		mylog "  mounting (real) $real_from to $automount_from"
+		[ -d $automount_from ] || mkdir $automount_from
+		mount -oloop,noatime $real_from $automount_from || {
+			stat=$?
+			autosnap_remove
+			return $stat
+		}
+	  	mirror_from=$automount_from
+	}
+
+	logfile=$(echo "$from" | sed -e 's{^/{{' -e 's{/{_{g' -e 's{ {_{g')
+	logfile=${logfile:-"_"}	# special case, from is /
+	logfile="$workdir/$logfile"
+
+	mylog "  ${dummytag}mirror $dummy -f --all $mirror_from $mirror_dest $*"
+	export RSYNC_SSH="ssh -c blowfish"
+
+	$use_rsync_module && {
+	  	mirror_dest=$(echo "$mirror_dest" | sed -e 's#:/#::#')
+	}
+
+	mirror_status=0
+
+	if $VERBOSE
+	then
+		mirror $dummy -f --all $mirror_from $mirror_dest \
+			--one-file-system --inplace $* || {
+				mirror_status=$?
+				mylog "  ERR $mirror_status on mirror (rsync)"
+				sleep 2
+			}
+	else
+		mylog "   logfile is $logfile"
+		mirror $dummy -f --all $mirror_from $mirror_dest \
+			--one-file-system --inplace $* \
+			>$logfile 2>&1 || {
+				mirror_status=$?
+				mylog "  ERR $mirror_status on mirror (rsync)"
+				sleep 2
+			}
+	fi
+
+	$do_dest_automount && {
+	  	if [ "$dest_sys" != "" ]
+		then
+			mylog "  $dest_sys: umount $automount_dest"
+			status=`ssh $dest_sys "umount $automount_dest || echo FAIL && rmdir $automount_dest"`
+			[ "$status" == "FAIL" ] && {
+				mylog "failed to umount $dest on system $dest_sys"
+				return 1
+			}
+		else
+			mylog "  umount $automount_dest"
+			umount $automount_dest || {
+				mylog "failed to umount $dest ($automount_dest)"
+				return 1
+			}
+		fi
+	}
+	$do_from_automount && {
+		mylog "  umount $automount_from"
+		umount $automount_from || return $?
+		rmdir $automount_from
+	}
+	autosnap_remove
+	return $mirror_status
+
+} #do_mirror()
+
+
+
+do_block()
+{
+	local tag=$1
+	local from_sys=$2
+	local from=$3
+	local dest_sys=$4
+	local dest=$5
+	shift 5
+
+	local real_from=$from
+	local logfile=
+	local mirror_status=0
+
+	[ "$from_sys" != "" ] && {
+		mylog "can't use from_sys ($from_sys) on block sync type"
+		return 1
+	}
+	logfile="$workdir/"$(echo "$from" | sed -e 's{^/{{' -e 's{/{_{g' -e 's{ {_{g')
+
+	safe_lvscan | grep ACTIVE | grep -q "'$from'" && {
+		mylog " from '$from' is LVM, autosnapping"
+	  	autosnap_create $from || return $?
+		real_from="$AUTOSNAP_DEV/$AUTOSNAP_NAME"
+	}
+
+	mylog "  ${dummytag}blocksync $real_from $dest_sys $dest $*"
+	$f_exec && {
+		mirror_status=0
+		if $VERBOSE
+		then
+			blocksync $real_from $dest_sys $dest $* || mirror_status=$?
+		else
+			mylog "   logfile is $logfile"
+			blocksync $real_from $dest_sys $dest $* >$logfile 2>&1 || mirror_status=$?
+		fi
+	}
+
+	autosnap_remove
+	return $mirror_status
+
+} #do_block()
+
+
+autosnap_create()
+{
+	local dev=$1
+	$DEBUG && {
+		echo "@ autosnap_create(), before"
+		safe_lvscan
+	}
+	sleep 2
+	sh -c "exec 0<&9 9<&- ; lvcreate -s -L $CurrSnapshotSize -n $AUTOSNAP_NAME $dev </dev/null" \
+		|| return $?
+	AUTOSNAP_DEV=`dirname $dev`
+	$DEBUG && {
+		echo "@ autosnap_create(), after, AUTOSNAP_DEV=$AUTOSNAP_DEV"
+		safe_lvscan
+	}
+	sleep 2
+	return 0
+}
+
+
+autosnap_remove()
+{
+	local cmd="exec 0<&9 9<&-; lvremove -f $AUTOSNAP_DEV/$AUTOSNAP_NAME </dev/null"
+
+	[ "$AUTOSNAP_DEV" == "" ] && return
+	[ -b $AUTOSNAP_DEV/$AUTOSNAP_NAME ] && {
+		mylog "  lvremove $AUTOSNAP_DEV/$AUTOSNAP_NAME"
+		$DEBUG && {
+			echo "@ autosnap_remove(), before"
+			safe_lvscan
+		}
+		sleep 2
+		sh -c "$cmd" || {	# retry
+			sleep 2
+			sh -c "$cmd" || return $?
+		}
+		AUTOSNAP_DEV=
+		$DEBUG && {
+			echo "@ autosnap_remove(), after"
+			safe_lvscan
+		}
+	}
+	return 0
+}
+
+
+
+safe_lvscan()
+{
+	sh -c "exec 0<&9 9<&-; lvscan $@" </dev/null
+}
+
+
+exec_list_conf()
+{
+	cd /etc/$CMD
+	egrep -l '^mirror\s|^block\s' *
+}
+
+exec_list_tags()
+{
+	sed -e 's/#.*//' $1 | egrep '^mirror\s|^block\s' \
+		| awk '{ print $2; }' | sort -u
+}
+
+
+# (MAIN)
+
+f_list=false
+f_exec=false
+f_list_tags=false
+all_systems=false
+tmpbase="/tmp/$CMD"
+automount_from="/mnt/$CMD-from-$$"	# do not share $tmpbase path!
+automount_dest="/mnt/$CMD-dest-$$"	# do not share $tmpbase path!
+sync_table="/etc/$CMD/sync_table"
+dummytag=""
+DefaultSnapshotSize="1G"
+
+CurrSnapshotSize=
+CurrDestSys=
+
+workdir=$HOME/$CMD
+
+if [ $(id -u) == 0 ]
+then
+	[ -f /etc/default/kusa-paths ] && {
+		workdir=$(grep "^KUSA_PATH_WORKDIR=" /etc/default/kusa-paths)
+		[ "$workdir" != "" ] && {
+			eval $workdir
+			workdir=$KUSA_PATH_WORKDIR/$CMD
+		}
+	}
+else
+	LOGFILE=$HOME/$CMD.log
+	KU_LOCKFILE=$HOME/$CMD.lock
+fi
+
+[ -d $workdir ] || mkdir -p $workdir
+
+
+# dummy_cleanup(), not full cleanup, on exits, here
+#
+trap "echo '*INTR*'; VERBOSE=true; dummy_cleanup; exit 255" 1 2 3
+trap 'echo -e "\n$0: unexpected error $? at $LINENO\n"' ERR
+trap 'dummy_cleanup' EXIT
+
+for cfg in /etc/default/$CMD /etc/$CMD.conf /etc/$CMD/$CMD.conf
+do
+	[ -f $cfg ] && . $cfg
+done
+
+while [ $# != 0 ]
+do
+    case $1 in
+	-L|--list-conf)	exec_list_conf; exit 0 ;;
+        -t|--list-tags)	f_list_tags=true; f_exec=false ;;
+	-l|--list)	f_list=true ; f_exec=false ;;
+	-n|--dry-run)	f_exec=false ;;
+	-x|--execute)	f_exec=true ;;
+	-q|--quiet)	VERBOSE=false ;;
+	-v|--verbose)	VERBOSE=true ;;
+	-D|--debug)	DEBUG=true ;;
+	-a|--all)	all_systems=true ;;
+	-c|--config)	[ $# -lt 2 ] && usage
+			sync_table=$2
+			shift
+			;;
+	--)	break ;;
+	-*)	usage ;;
+	*)	break ;;
+    esac
+    shift
+done
+
+$f_exec || dummytag="(dummy) "
+
+# uses full path for synctable, or should point to /etc/$CMD dir?
+case $sync_table in
+  /*)	;;
+  .*)	echo "error, you can't use a relative/hidden path for config file" >&2
+  	echo "use a simple filename (if in /etc/$CMD directory) or" >&2
+	echo "full path instead" >&2
+	exit 1
+	;;
+  *)	sync_table="/etc/$CMD/$sync_table" ;;
+esac
+
+[ -f "$sync_table" ] || {
+	echo "error, sync_table '$sync_table' not found" >&2
+	exit 1
+}
+
+$f_list_tags && {
+	exec_list_tags "$sync_table"
+	exit 0
+}
+
+[ $# == 0 ] && {
+	$all_systems || usage
+}
+
+$f_list && {
+	parse_sync_table $sync_table $@
+	exit 0
+}
+
+
+ku_cap_logfile
+$VERBOSE || exec >>$LOGFILE 2>&1
+
+out=$(ku_lock 2>&1) || {
+	mylog "cannot lock: $out"
+	exit 1
+}
+
+# activate full cleanup on exits
+#
+trap "echo '*INTR*'; VERBOSE=true; cleanup; exit 255" 1 2 3
+trap 'cleanup' EXIT
+
+stat=0
+
+mylog "STARTED: $@"
+$f_exec || mylog " (running in dummy mode)"
+parse_sync_table $sync_table $@ || stat=$?
+mylog "ENDED status=$stat"
+
+exit $stat

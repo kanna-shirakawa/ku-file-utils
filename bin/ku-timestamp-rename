@@ -1,0 +1,201 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.8"
+CMDSIG="$CMD v$CMDVER (2022-12-19)"
+
+set -e -u
+
+. /lib/ku-base/echo.sh
+
+
+# (FUNCTIONS)
+
+usage()
+{
+	echo "
+# $CMDSIG - change directory mtime using the newest file in it
+
+usage: $CMD [options] dir(s)_or_file(s)
+
+options:
+ -n|--dry-run	don't do anything (show commands only)
+ -c|--cleanup	cleanup directories before timestamping (see below)
+ -r|--recurse	apply recursively
+ --rename	rename dir after mtime change, using the format
+ 		YYYYmmdd-dirname
+ --fulltime	renames using YYYYmmddTHHMMSS time format
+ --show-newname	when renaming, echoes the new name on stdout
+
+files removed by cleanup:" >&2
+	echo -n "  " >&2
+	for file in $cleanup_files
+	do
+		echo -n "$file " >&2
+	done
+	echo -e "\n" >&2
+	exit 1
+}
+
+set_timestamp()
+{
+	local path=$1
+	local path_trunc=$(echotrunc $len "$path")
+	local newest_file=
+	local newest_trunc=
+	local timestamp=
+	local name=
+	local dirname=
+	local newname=
+	local d="[0-9]"
+
+	printf "  %-${len}s: " "$path_trunc" >&2
+	[ -L "$path" ] && {
+		echo "skip (symlink)" >&2
+		return 0
+	}
+	[ "X$path" = "X." -o "X$path" = "X.." ] && {
+		echo "skip (ignored . and ..)" >&2
+		return 0
+	}
+
+	# if the path is a file, use the mtime of file itself
+	if [ -f "$path" ]
+	then
+		newest_file=$path
+	else
+		newest_file=$(oldest -q --terse --newest --rx "$exclude_re" "$path")
+		[ "X$newest_file" = "X" ] && {
+			echo "skip (no files)" >&2
+			return 0
+		}
+	fi
+
+	if $fulltime
+	then
+		timestamp=$(date '+%Y%m%dT%H%M%S' --reference "$newest_file")
+	else
+		timestamp=$(date '+%Y%m%d' --reference "$newest_file")
+	fi
+	newest_trunc=$(echotrunc $len "$newest_file")
+	printf "%s %s\n" "$timestamp" "$newest_trunc" >&2
+	$dry_run || touch --reference "$newest_file" "$path"
+
+	$rename && {
+		name=$(basename "$path")
+		dirname=$(dirname "$path")
+		case "$name" in
+		  $d$d$d$d$d$d$d$d-*)
+			printf "  %-${len}s: %s\n" "$path_trunc" "(already timestamped, not renamed)" >&2
+		  	return 0
+			;;
+		esac
+
+		if [ "X$dirname" = "X." ]
+		then
+			dirname=
+		else
+			dirname="$dirname/"
+		fi
+
+		newname="$dirname${timestamp}-$name"
+		[ "X$path" != "X$newname" ] && {
+			printf "  %-${len}s: %s-> %s\n" "$path_trunc" "$dry_msg" "$newname" >&2
+			$dry_run || mv "$path" "$newname"
+			$show_newname && echo "$newname"
+		}
+	}
+	return 0
+}
+
+
+
+
+# (MAIN)
+
+dry_run=false
+dry_msg=
+flags=
+recurse=false
+cleanup=false
+rename=false
+fulltime=false
+show_newname=false
+
+cleanup_files="
+	Thumbs.db
+	.sums
+	.cache_fdupe
+	*.tmp
+"
+exclude_re='^Thumbs.db$|^\.sums$|^\.cache_fdupe$|\.tmp$'
+
+while [ $# != 0 ]
+do
+	case $1 in
+	  -n|--dry-run)	dry_run=true; dry_msg="(dummy) "; flags="$flags $1" ;;
+	  -c|--cleanup)	cleanup=true; flags="$flags $1" ;;
+	  -r|--recurse)	recurse=true ;;
+	  --rename)	rename=true ;;
+	  --fulltime)	fulltime=true ;;
+	  --show-newname) show_newname=true ;;
+	  --)		break ;;
+	  -*|"")	usage ;;
+	  *)		break ;;
+	esac
+	shift
+done
+
+[ $# = 0 ] && usage
+
+$rename && {
+	$recurse && { echo "error: recursion cannot be used with rename" >&2; exit 1; }
+}
+$fulltime && {
+	$rename || { echo "error: --fulltime must be used with --rename only" >&2; exit 1; }
+}
+$show_newname && {
+	$rename || { echo "error: --show-newname must be used with --rename only" >&2; exit 1; }
+	[ $# != 1 ] && { echo "error: --show-newname must be used only with one dir/file" >&2; exit 1; }
+}
+
+# fancy output
+#
+COLUMNS=${COLUMNS:-$(tput cols)}
+COLUMNS=${COLUMNS:-80}
+len=$(( ($COLUMNS/2)-10 ))
+
+$cleanup && {
+	echo -e "\ncleaning ..." >&2
+	for dir
+	do
+		[ -d "$dir" ] || continue
+		for file in $cleanup_files
+		do
+			if $dry_run
+			then
+				find "$dir" -name "$file" -print
+			else
+				find "$dir" -name "$file" -print -delete
+			fi | sed -e "s/^/  ${dry_msg}cleanup /" >&2
+		done
+	done
+	echo "" >&2
+}
+
+for path
+do
+	if $recurse
+	then
+		[ -d "$path" ] || continue
+		echo " searching recursive '$path' ... " >&2
+		find "$path" -depth -type d -exec $CMD $flags "{}" \;
+	else
+		set_timestamp "$path"
+	fi
+done
+
+exit 0

@@ -1,0 +1,190 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.0"
+CMDSTR="$CMD v$CMDVER (2025-02-02)"
+
+usage()
+{
+	echo "
+== $CMDSTR - mounts a BitLocker device using fuse/dislocker ==
+
+usage: $CMD [options] device mountpoint [dislocker_options] -- [mount_options]
+
+options:
+  -v|--verbose		be verbose
+  -q|--quiet		be quiet
+  -x|--execute		do things
+  -n|--dry-run		dry-run
+  -h|--help		show help
+  -D[n]|--debug[=n]	set debug, optionally with level
+  --			stop processing options
+
+. options after 'mountpoint' goes to dislocker program
+. options after '--' goes to mount program
+
+  	$CMD /dev/sdc2 /temp/mount_temp -u
+" >&2
+	[ $# != 0 ] && echo -e "\n$@\n" >&2
+	exit 127
+}
+
+
+cleanup()
+{
+	trap "" 1 2 3 ERR EXIT
+	stty sane echo echoe
+	trap 1 2 3 ERR EXIT
+	return 0
+}
+
+pdebug()
+{
+	$DEBUG && echo -e "#D ${FUNCNAME[1]}() $*" >&2
+	return 0
+}
+
+
+
+run_cmd()
+{
+	if $F_EXEC
+	then
+		echo "# $*"
+		"$@" || return $?
+	else
+		echo "# (dummy) $*"
+	fi
+	return 0
+}
+
+make_fuse_tmpdir()
+{
+	local dirbase="/tmp/$CMD"
+	local prog=0
+	local dirname=
+
+	for prog in $(seq 1 10)
+	do
+		dirname=$(printf "%s-%03d" $dirbase $prog)
+		[ -d $dirname ] || {
+			mkdir -p "$dirname"
+			chmod 700 "$dirname"
+			echo "$dirname"
+			$VERBOSE && echo -e "\n fuse temp directory: $dirname\n" >&2
+			return 0
+		}
+	done
+	echo -e "\e$CMD error: too many devices opened (max=10)\n"
+	return 1
+}
+
+
+
+# (MAIN)
+
+trap 'echo -e "\n*INTR*\n"; exit 255' 1 2 3
+trap 'echo -e "\nunexpected error $? at $LINENO\n"' ERR
+trap 'cleanup' EXIT
+set -e
+set -u
+
+which "dislocker" >/dev/null || {
+	echo -e "\n$CMD error: you need 'dislocker' program to do this\n" >&2
+	echo -e "  (missing 'dislocker' package?)\n" >&2
+	exit 1
+}
+
+VERBOSE=${VERBOSE:-true}
+DEBUG=${DEBUG:-false}
+DBGLEVEL=${DBGLEVEL:-0}
+F_EXEC=${F_EXEC:-true}
+fuse_tmpdir=
+dummycmd=
+
+declare -A dislocker_opts
+dislocker_nopts=0
+
+
+
+# 1. get our options
+#
+while [ $# != 0 ]
+do
+  case $1 in
+    -h|--help)		usage ;;
+    -v|--verbose)	VERBOSE=true ;;
+    -x|--execute)	F_EXEC=true ;;
+    -n|--dry-run)	F_EXEC=false ;;
+    -q|--quiet)		VERBOSE=false ;;
+    -D|--debug)		DEBUG=true ;;
+    -D[0-9]|--debug=[0-9])
+    			DEBUG=true; DBGLEVEL=$(echo "X$1" | sed -e 's/^X-D//' -e 's/^X--debug=//')
+			;;
+    --)			break ;;
+    -*|"")		usage "unknown option '$1'" ;;
+
+    # break on any non-option arg
+    *)			break ;;
+  esac
+  shift
+done
+
+[ $# -lt 2 ] && {
+	usage "you need at least 'device' and 'mountpoint'"
+}
+device=$1
+mountpoint=$2
+default_user_parm="-u"
+shift 2
+
+
+
+# 2. get dislocker options
+#
+while [ $# != 0 ]
+do
+  case $1 in
+    --)	break ;;
+    -p|-f|-u|-k)
+    	default_user_parm=	# do not use default unencrypt method
+    	dislocker_nopts=$(($dislocker_nopts+1))
+    	dislocker_opts[$dislocker_nopts]=$1
+	;;
+    *)	dislocker_nopts=$(($dislocker_nopts+1))
+    	dislocker_opts[$dislocker_nopts]=$1
+	;;
+  esac
+  shift
+done
+
+
+# 3. sanity checks
+#
+case $F_EXEC in
+  true) ;;
+  *)	dummycmd="echo '(will run)'" ;;
+esac
+
+
+# 4. open the bitlocker partition
+#
+fuse_tmpdir=$(make_fuse_tmpdir)
+
+run_cmd dislocker $default_user_parm ${dislocker_opts[@]+"${dislocker_opts[@]}"} \
+	$device $fuse_tmpdir
+
+pdebug "$(ls -l $fuse_tmpdir/* 2>&1)"
+
+# 2. mount the unencrypted partition
+#
+run_cmd mount "$@" "$fuse_tmpdir/dislocker-file" "$mountpoint"
+
+echo
+
+$F_EXEC && df -h "$mountpoint"
+
+exit 0

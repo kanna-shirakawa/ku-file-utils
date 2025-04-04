@@ -1,0 +1,256 @@
+#!/usr/bin/perl
+#
+# __copy1__
+# __copy2__
+#
+# read/write data like 'dd', but showing timings, usefull for
+# test and benchmarks
+#
+use warnings;
+use strict;
+
+my $CMD		= "ddtime";
+my $CMDVER	= "2.2";
+my $CMDSTR	= "$CMD v$CMDVER (2023-10-09)";
+
+my $read;
+my $write;
+my $buf;
+my $stime;	# start time
+my $ctime;	# current time
+my $time;
+my $tot_read	= 0;
+my $prog_read	= 0;
+my $maxbytes	= 0;
+my $maxblocks	= 0;
+my $blksize	= 512;
+my $blocks_read	= 0;
+my $pattern	= "";
+
+while (@ARGV) {
+	$_	= shift;
+	if ($_ =~ /^bs=/) {
+		$blksize	= translate_size($_);
+		die( "\n$CMD: blksize cannot be zero\n" )	if (!$blksize);
+		next;
+	}
+	if ($_ =~ /^count=/) {
+		$maxblocks	= $_;
+		$maxblocks	=~ s/^count=//;
+		die( "\n$CMD: count must be a number\n" )	if ($maxblocks !~ /^\d+$/);
+		next;
+	}
+	if ($_ =~ /^max=/) {
+		$maxbytes	= translate_size($_);
+		next;
+	}
+	if ($_ =~ /^pattern=/) {
+		$pattern	= $_;
+		next;
+	}
+	usage();
+}
+
+
+check_pattern( $pattern )	if ($pattern);
+
+if ($maxbytes) {
+	die( "\n$CMD: read limit ($maxbytes) cannot be less than blksize ($blksize)\n" )
+		if ($maxbytes < $blksize);
+	printf( STDERR "\n$CMD: read limit set to %d bytes\n\n", $maxbytes );
+} else {
+	if ($maxblocks) {
+		$maxbytes	= $maxblocks * $blksize;
+		printf( STDERR "\n$CMD: read limit set to %d bytes (%d blocks)\n\n", $maxbytes, $maxblocks );
+	}
+}
+
+
+# start data copy
+#
+$stime	= time();
+$time	= $stime;
+$read	= $blksize;
+
+while (1) {
+
+	if ($pattern eq "") {
+		$read = sysread( STDIN, $buf, $blksize );
+		if (!defined $read) {
+			report();
+			die( "\n$CMD: read error: $!\n" );
+		}
+		if ($read == 0) {
+			report();
+			exit( 0 );
+		}
+	}
+
+	$write	= syswrite( STDOUT, $buf, $read );
+	if (!defined $write) {
+		report();
+		die( "\n$CMD: error writing: $!\n" );
+	}
+	if ($write != $read) {
+		report();
+		die( "\n$CMD: error writing, short (read=$read, write=$write)\n" );
+	}
+	$tot_read	+= $read;
+	$prog_read	+= $read;
+	$blocks_read	++;
+	last			if ($maxbytes && $tot_read >= $maxbytes);
+
+	$ctime	= time();
+	if ($ctime != $time) {
+		my $kps	= $prog_read / ($ctime - $time);
+		my $tks	= $tot_read / ($ctime - $stime);
+		printf( STDERR
+		    "\r\033[K %s blk=%d   %s   %s/sec   (avg %s/sec)\r",
+		    fmttime($ctime - $stime),
+		    $blocks_read,
+		    fmtsize($tot_read,1),
+		    fmtsize($kps,1),
+		    fmtsize($tks,1),
+	        );
+		$prog_read	= 0;
+		$time	= $ctime;
+	}
+}
+report();
+exit( 0 );
+
+
+
+
+sub usage {
+	printf( STDERR "
+== %s == copy data showing I/O stats and progress ==
+
+usage: %s [bs=blocksize] [count=nnn] [max=size] [pattern=type]
+
+where:
+
+  . sizes can be provided with units, like '32k'
+  . use count (blocks count) or max (byes written) to limit
+    the total amount of data transferred
+  . pattern generates internally the output data (never reads),
+    available patterns are:
+
+      r|random	use a repeated random block (from /dev/urandom)
+
+      0|zero	use all 0 bits
+
+      1|one	use all 1 bits
+
+caveats:
+  . block counts are messed up if you read from a character buffered
+    input, like a tty
+  . since read are always performed using 'blocksize' buffer, max=size
+    that are not blocksize multiple will results in more bytes read
+    than expected
+",
+	$CMDSTR, $CMD );
+	exit(1);
+}
+
+
+sub translate_size {
+	my ($isize)	= @_;
+	   $isize	=~ s/^[a-z]*=//;
+	my $osize	= $isize;
+
+	CASE: {
+		if ($isize =~ /^\d+$/) {
+			last CASE;
+		}
+		if ($isize =~ /[kK][bB]*$/) {
+			$osize	=~ s/[a-zA-Z].*//;
+			$osize	*= 1024;
+			last CASE;
+		}
+		if ($isize =~ /[mM][bB]*$/) {
+			$osize	=~ s/[a-zA-Z].*//;
+			$osize	*= 1048576;
+			last CASE;
+		}
+		if ($isize =~ /[gG][bB]*$/) {;
+			$osize	=~ s/[a-zA-Z].*//;
+			$osize	*= 1073741824;
+			last CASE;
+		}
+		printf( STDERR "%s: wrong size: %s (use k, m, g, Kb, Mb, Gb)\n", $CMD, $isize );
+		exit( 1 );
+	}
+	return $osize;
+}
+
+
+sub report {
+	$ctime	= time();
+	$ctime	= $stime + 1	if ($ctime <= $stime);
+	my $tks	= $tot_read / ($ctime - $stime);
+	printf( STDERR
+			"%s time: %-10s   written %-10s (%d %s-blocks) at %s/sec\n",
+			"\r\033[K",
+			fmttime($ctime - $stime),
+			fmtsize($tot_read,1),
+			$blocks_read, fmtsize($blksize,0),
+			fmtsize( $tks,1 ),
+		);
+	##printf STDERR ">>>stime=$stime ctime=$ctime\n";
+}
+
+sub fmtsize {
+	my ($bytes,$dec)	= @_;
+	$dec			= 3	if (!defined $dec);
+
+	my $k	= $bytes / 1024;
+	my $m	= $k / 1024;
+	my $g	= $m / 1024;
+
+	return sprintf( "%.${dec}f Gb", $g )		if ( int($g) );
+	return sprintf( "%.${dec}f Mb", $m )		if ( int($m) );
+	return sprintf( "%.${dec}f Kb", $k )		if ( int($k) );
+	return sprintf( "%d bytes", $bytes );
+}
+
+
+sub fmttime {
+	my ($time)	= @_;
+	
+	my $h	= int( $time / 3600 );
+	my $m	= int( ( $time - $h * 3600 ) / 60 );
+	my $s	= $time - $h * 3600 - $m * 60;
+
+	return sprintf( "%d:%02d:%02d", $h, $m, $s )	if ($h);
+	return sprintf( "%2d:%02d", $m, $s )		if ($m);
+	return sprintf( "%d secs", $s );
+}
+
+
+sub check_pattern
+{
+	my ($type)	= @_;
+
+	$type	=~ s/^pattern=//;
+
+	printf( STDERR "\r\033[K filling pattern buffer ...\r" );
+
+	if ($type =~ /^r/) {
+		$buf	= `dd if=/dev/urandom bs=$blksize count=1 2>/dev/null`;
+		return;
+	}
+	if ($type =~ /^1|^o/) {
+		$buf	= sprintf( "%c", 255 );
+		$buf	= $buf x $blksize;
+		return;
+	}
+	if ($type =~ /^0|^z/) {
+		$buf	= sprintf( "%c", 0 );
+		$buf	= $buf x $blksize;
+		return;
+	}
+
+	print( STDERR "error: unknown type '$type'\n" );
+	usage();
+}

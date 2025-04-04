@@ -1,0 +1,32 @@
+# /etc/ku-autosync/sync_table (sample)
+#
+# stype can be:
+#	mirror 	for directories mirroring
+#	block	for block device mirroring
+#
+# tag	one arbitrary string used to group entrines
+#
+# from	original directory or block device
+#
+# dest	destination directory or block device, if device the
+#	size must match the original one
+#
+# parms	additional parms for the sync command
+#
+# both from and dest can be remote, and accepts the hostname in
+# dhe form "system:/path"; note that the rsync format (system::module)
+# is accepted but tricky to use
+#
+# in from and dest, environment vars are expanded, you can set them
+# in /etc/ku-autosync/ku-autosync.conf, or /etc/default/ku-autosync
+#
+#stype	tag	from			dest			parms
+
+# directory (filesystem) mirror example, using a previuos defined $HOST hostanme
+# and additional "mirror" (rsync) parms
+#
+#mirror	self	/w			$HOST:/w		--exclude=something
+
+# block device mirror example, here a LVM volume
+#
+#block	mtp	/dev/lv/mydata		remote.system.com:/dev/lv/mydata

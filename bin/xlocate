@@ -1,0 +1,1850 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="2.13"
+CMDSTR="$CMD v$CMDVER (2025-03-12)"
+
+set -e -u
+
+[ -f /etc/default/kusa-paths ] && . /etc/default/kusa-paths
+KUSA_PATH_TMPDIR=${KUSA_PATH_TMPDIR:-/tmp}
+export TMPDIR=${TMPDIR:-$KUSA_PATH_TMPDIR}
+
+usage()
+{
+	print_usage >&2
+	echo -e "\nUSE $CMD --help FOR OPTIONS AND MORE INFOS\n" >&2
+	[ $# != 0 ] && { echo "USAGE ERROR:" "$@" >&2; echo >&2; }
+	exit 127
+}
+
+print_usage()
+{
+	echo "
+== $CMDSTR == extended locate-like filelist database search/update ==
+
+USAGE
+
+ update mode
+   $CMD --update [options] dir(s)    (-U, update database REPLACING entries)
+   $CMD --add [options] dir(s)       (-A, update database ADDING entries)
+
+ info mode
+   $CMD --info dbname                (-I, show disk info, if any)
+   $CMD --list                       (-L, list databases)
+   $CMD --long-list                  (-LL, list databases w/details)
+   $CMD --help                       (-h, prints help)
+   $CMD --dry-run                    (-n, prints settings and exits)
+
+ prune mode
+   $CMD [options] --prune 're'       (-P, remove records matching regexp 're')
+
+ search mode (default)
+   $CMD [options] regexp [dbfile(s)...] [-- egrep_options ...]
+
+
+SEARCH OPTIONS:
+  -a|--archives		search inside archives, too
+  -l|--extended		show full file infos (default: label + type + filename)
+  -T|--terse		show only filenames
+  --files		search only files
+  --dirs		search only directories
+  -s|--sortfield FLD	sort output one of [tsn]: t=time s=size n=name; leading or
+  			trailing 'r' can be added for reverse order
+
+
+dbfile(s) is a list of zero or more:
+  . absolute path
+  . single filename, will be searched in search path
+  . a regexp, matched against all dbfiles list
+  . none: all dbfiles in search path will be used
+
+note: dbfiles can be with or whithout .xlocate and/or .gz suffixes, it
+will be automatically appended if needed
+"
+}
+
+print_help()
+{
+	echo "
+COMMON OPTIONS:
+
+ -v|--verbose	be verbose (default); implies --totals but NOT --progress
+ -q|--quiet	be quiet
+ -D|--debug	debug messages
+ --totals	print stats at end
+ --progress	progress infos (for xlocate-cleandupes, see --limit-ram-usage)
+ --create-conf [file]
+ 		create a new config file (default: \$HOME/.$CMD.conf) and exits
+ --		stop args evalutation (usefull to pass arguments to egrep search)
+
+
+
+UPDATE OPTIONS:
+
+ -d|--db filename
+ 	use 'filename' instead of default filename, .$CMD extension will
+	be automatically added, if a single word is used the program will
+	searches in the search path list for existing one, or take the
+	first writeable place in the path list if creating a new one
+
+ -t|--tag tag
+ 	prepend 'tag|' to filenames in database, ie: use volume name for
+	removable disks; for best results you should use it with
+	--db tag --rmleaf
+
+ --autotag
+ 	valid only when working on mounted partition (ie: an external USB
+	drive), automatically set dbname and tag to the label of mounted
+	volume
+
+ --zip (--no-zip)
+ 	searches inside zipfiles
+ --tar (--no-tar)
+ 	searches inside tarfiles
+ --7z (--no-7z)
+ 	searches inside 7z files
+ --record-dirs (--no-record-dirs)
+ 	records dirnames into dbfiles
+
+ --rmleaf (--no-rmleaf)
+	removes directories passed as arguments from filelist, usefull to wipe
+	out mountpoint for removable disks; use with --tag VOLUMENAME or
+	with autotag flag
+
+ --leaf string
+ 	when --rmleaf flag is on, forces 'string' as pattern to be removed from
+	filenames, instead of the scanned directories names
+
+ --replace
+ 	replaces db file (default is update, not replace)
+
+ --compress
+ 	compress db file (with gzip --fast)
+ --sort
+ 	sort db file before compressing (useless, but if you like this way ...)
+ --cache-path path
+	uses 'path' as path for cachedirs, instead of the default (dbfile path)
+ --cache-name name
+	uses 'name' for directory name, insted of the default (dbfile.cache)
+
+ --limit-ram-usage
+ 	uses external program 'xlocate-cleanupes' to check duplicate records,
+	instead of internal, inline awk program; slower, and requires perl with
+	berkeley db extension (libberkeleydb-perl package), but very low ram
+	usage
+
+
+PRUNE OPTIONS
+  in prune mode the only valid option is the dbfile name (-d|--dbfile)
+
+  prune will remove entries from dbfile matching the regular expression given as
+  argument; usefull to remove old entries without rescanning an entire tree and
+  replacing the whole dbfile
+
+  only one extended re (egrep will be used) can be supplied, and the match will
+  be performed on the whole record (ie: tag, filetype, filename, size, timestamp)
+
+  important: since the internal record separator is pipe (|), you need to escape
+  it if you want to use it in the re, see EXAMPLES below
+
+
+EXTENDED FILE INFOS
+
+  starting from v.2 the database format is changed, $CMD stores extended file
+  infos (size, last mdate); old dbfile format is automatically detected, in
+  search mode --extended option will be ignored, in update mode the dbfile will
+  be converted in the new format, leaving extended fields empty for old entries
+
+
+SEARCH EXAMPLES
+
+ search all tarfiles
+
+   note the use of escaped pipes that matches the logical 'end of filename'
+
+	xlocate '\\.tar\||\\.tar.gz\||\\.tar.bz2\|'
+
+
+ search files containing 'STRING' (ignoring case), but showing sizes and dates,
+ and only files modified in 2019 (see CAVEATS):
+
+ 	xlocate -i -l STRING | fgrep ' 2019-'
+
+ search files containing 'STR1' or 'STR2', sorted by size, in reverse order,
+ and prints full record
+
+ 	xlocate -s sr -l 'STR1|STR2'
+
+
+
+UPDATE EXAMPLES
+
+ quick update content of external usb disk (--autotag will set dbname and tag
+ to the label value of mounted partition):
+
+	xlocate -U --autotag /media/USBDISK01
+
+
+ the same as above, but with custom defaults
+
+   you have set F_autotag=true in /etc/xlocate.conf or \$HOME/.xlocate.conf;
+   in the config file you can also set to true archive scanning, dbfile
+   compression, removing leaf dir, and other parms:
+
+ 	xlocate -U /media/USBDISK01
+
+
+ update only some dirs from an external USB disk
+
+   you want to remove the mountpoint path from the filenames, but cannot use
+   the --rmleaf flag alone, because you are passing multiple dirs as arguments,
+   and don't want to wipe out the dirnames itself from; you need to ovveride
+   the 'leaf' pattern using --leaf; remember to use --add instead of --update,
+   or the entire old content tagged from disk volume name will be removed
+   from the dbfile:
+
+   	xlocate --add --autoag /media/udisk --rmleaf --leaf /media/udisk
+	   /media/udisk/dir1 /media/udisk/dir2 /media/udisk/dir3
+
+
+ catalog an archive USB disk
+
+   you have an usb disk mounted on /media/udisk, labeled UDISK001;
+   we want to create a complete filelist of the disk, recording entries in
+   its own dbfile; the --autotag flag will automatically set the dbfile
+   name and the tag from disk volume name
+ 
+   using the --rmleaf option we can wipe out the mountdir \"/media/udisk\"
+   from the db entries, all records will be relative to disk root:
+
+  	xlocate --update --autotag --rmleaf /media/udisk
+
+   after adding some directories to the disk, add them to the db; to
+   avoid rescanning the whole disk you can scan only the new dirs, but
+   because you are scanning one or more subdirs of the mountpoint, you
+   cannot use the --rmleaf alone, you need to override the leaf pattern
+   to remove only the mountpoint string from filenames, leaving the
+   subdirs intact:
+
+	xlocate --add --autotag --rmleaf --leaf /media/udisk
+	   /media/dir1 /media/udisk/dir2 ... /media/udisk/dirN
+
+   note that $CMD is agnostic about the real tree that is scanning, the
+   recorded entries are identified by the tag, than can be arbitrary
+   and not really related to the current tree you are scanning/adding
+  
+   it's up to you to be consistent with tag names, dbfiles names, and
+   the paths you are scanning
+
+   example: you are using a temp directory to store files that will be
+   copied (added) to an external disk; you can copy the files, and run
+   $CMD in the temp dir, faster than the usb disk, before cleaning it,
+   just make sure that you use the --add and --no-rmleaf options
+   
+   note that you cannot use --autotag option here, because you are not
+   running directly on mounted partition, so you need to manually define
+   tag and dbfile in the options:
+
+   in the example below we also run $CMD-diskinfs, that produce a couple
+   of usage summary files about the mounted disk (partition); to be
+   consistent we copy back those files to the tempdir before run the
+   $CMD command, so we have those files infos included in the dbfile:
+
+	cd /tmp/mytempdir
+	cp -avf * /media/udisk/
+
+	cd /media/udisk
+	$CMD-diskinfos
+	cp disk-usage.txt /mnt/mytempdir
+
+	cd /tmp/mytempdir
+  	xlocate --add --tag UDISK001 --db UDISK001 --no-rmleaf *
+
+
+
+PRUNE EXAMPLES
+
+ remove a couple of directories from the dbfile, without rescanning all
+ 
+   note the use of pipes: the regular one is the extended regular expression
+   separator for the couple of matches, the escaped ones are used to match
+   the beginning of the directories paths in the full record (that contain
+   tag and ftype before the filepath)
+
+   note also the trailing slashes, to match the rigth directory paths
+
+	xlocate -d dbname --prune '\|one/dir/|\|another/dir/'
+
+
+ the same as above, but only for one dir and a specific tag
+
+	xlocate -d dbname --prune '^mytag\|.\|my/directory/path'
+
+
+CAVEATS
+
+  Searches are performed on the whole records, not only in filename part,
+  this can produce false positives, expecially if you try to search using
+  digits (ie: 1, 123) that can match filesizes parts (that are recorded
+  verbatim in the records).
+
+  On the other way you cannot directly search by modification date, since
+  they are internally stored in unix time format (seconds since epoch).
+  In example, to search all files dated Aug 2004:
+
+  	xlocate 2004-08-		doesn't works
+	xlocate . | grep 2004-08-	this does
+
+
+  Archive files scanning needs external programs to run (tar, 7z) and
+  relies on command output format, that can change in the future.
+
+
+COPYRIGHT
+
+  __copy1__
+  __copy2__
+
+CURRENT SETTINGS:"
+	print_current_settings
+}
+
+cleanup()
+{
+	[ "x${TmpDir:-}" != "x" ] && {
+		if $DEBUG
+		then
+			decho "NOT removing TmpDir ($TmpDir)" >&2
+		else
+			rm -rf "$TmpDir"
+		fi
+	}
+	return 0
+}
+
+print_current_settings()
+{
+  	local txtleaf=
+	local text=
+
+	[ "X$Leaf" != "X" ] && txtleaf="leaf: '$Leaf'"
+
+	text="
+  Mode:		    $Mode
+  Cfg paths:        $Config_searchpath
+  Db paths:         $Db_searchpath
+  Loaded Cfg files: $LoadedCfgFiles
+
+  DbFile:	    $DbFile	$DbFile_auto
+  Tag:              $Tag	$Tag_auto
+  autotag:          $F_autotag
+  remove_leaf:      $F_remove_leaf	$txtleaf
+  compression:      $F_CompressDbFile
+  sort:             $F_SortDbFile
+  record dirs:      $F_record_dirs
+  limit RAM usage:  $F_LimitRamUsage
+  archives scan:    zip=$F_search_zip tar=$F_search_tar 7z=$F_search_7z
+"
+	if [ "X${PRJ:-}" = "X" ]
+	then
+		echo "$text" | sed -e "s#$HOME#\$HOME#g"
+	else
+		echo "$text" | sed -e "s#$PRJ#\$PRJ#g" -e "s#$HOME#\$HOME#g"
+	fi
+	return 0
+}
+
+
+
+export TERM=${TERM:-dumb}
+export COLUMNS=$(tput cols 2>/dev/null || :)
+
+COLUMNS=${COLUMNS:-80}
+COLUMNS=$(expr $COLUMNS - 10)
+
+
+echotrunc() { echo "$@"; }
+decho() { $DEBUG && { echo -n "D# " >&2; echo "$@" >&2; } || :; }
+vecho() {
+	$VERBOSE || return 0
+	local n=
+	[ "X$1" = "X-n" ] && { n="-n"; shift; }
+	[ "X$1" = "X-e" ] && { shift; }
+	local msg=$(echotrunc $COLUMNS "$@")
+	echo -e $n "$msg" >&2
+}
+
+[ -f /lib/ku-base/echo.sh ] && . /lib/ku-base/echo.sh
+
+
+get_volumename()
+{
+	# not yet implemented
+	:
+}
+
+scan_tarfile()
+{
+	local dir=$1
+	local tag=$2
+	local file=$3
+
+	local inputfile=$file
+	local outfile="$TmpDir/tar.out"
+	local size=
+	local date=
+	local time=
+	local fname=
+	local cachefile=
+	local status=0
+
+	vecho -n "  TAR $file .. "
+
+	[ -f "$inputfile" ] || inputfile="$dir/$file"
+
+	cachefile=$(locate_cachefile "$inputfile") || return $?
+
+	if [ -s "$cachefile" ]
+	then
+		vecho -n "(cached) "
+	else
+		#          1         2         3         4         5         6
+		# ....:....|....:....|....:....|....:....|....:....|....:....|
+		# -rwxr-x--- 0/0           23787 2019-12-09 17:05 ku-base/bin/xlocate
+		# 1	     2		   3     4	    5
+		#
+		tar tv --numeric-owner -f "$inputfile" >"$outfile" 2>&1 || status=$?
+		vecho -n ". "
+
+		# to transform mtime in seconds since epoch:
+		#  1. 2019-12-09 17:05 --> 2019 12 09 17 05 00
+		#  2. calls mktime() func
+		#
+		$Awk '
+		  /^d/	{ next }
+		  {
+			fname=substr( $0, 49 )
+			time=$4 " " $5 " 00";
+			gsub( "[-:]", " ", time );
+			printf( "%s|%s|%s\n", fname, $3, mktime(time) );
+		  }' "$outfile" | gzip --fast >"$TmpDir/cachefile"
+		vecho -n ". "
+
+		mv "$TmpDir/cachefile" "$cachefile"
+	fi
+
+	gzip -d < "$cachefile" | sed -e "s<^<$tag|a|$file$ArcTag<"
+
+	if [ $status = 0 ]
+	then
+		vecho "ok"
+	else
+		echo "$tag|a|$file$ArcTag **** ERROR $status READING TARFILE ****"
+		vecho "**ERROR**"
+		$VERBOSE && cat "$outfile" >&2
+	fi
+	rm -f "$outfile"
+	return 0
+}
+
+scan_zipfile()
+{
+	local dir=$1
+	local tag=$2
+	local file=$3
+
+	local inputfile=$file
+	local outfile="$TmpDir/zip.out"
+	local size=
+	local date=
+	local time=
+	local fname=
+	local cachefile=
+	local status=0
+
+	vecho -n "  ZIP $file .. "
+
+	[ -f "$inputfile" ] || inputfile="$dir/$file"
+
+	cachefile=$(locate_cachefile "$inputfile") || return $?
+
+	if [ -s "$cachefile" ]
+	then
+		vecho -n "(cached) "
+	else
+		# Archive:  test.zip
+		#   Length      Date    Time    Name
+		# ---------  ---------- -----   ----
+		#          1         2         3         4         5         6
+		# ....:....|....:....|....:....|....:....|....:....|....:....|
+		#         0  2020-01-22 00:29   ZIP
+		#         1  2          3       4
+		#
+		#         0  2020-01-22 00:29   bin/
+		#      3457  2016-11-08 16:06   bin/kusysinfo
+		# ---------                     -------
+   		#    283469                     52 files
+		#
+		unzip -l "$inputfile" >"$outfile" 2>&1 || status=$?
+		vecho -n ". "
+
+		$Awk '
+		  /\/$/		{ next }
+		  ($2 ~ /^[0-9][0-9][0-9][0-9]-/) {
+		  	if (offset == 0) {
+				time = " " $3 " "
+				offset = index( $0, time )
+			}
+			fname = substr( $0, offset + 9 )
+			time  = $2 " " $3 " 00"
+			gsub( "[-:]", " ", time )
+			printf( "%s|%s|%s\n", fname, $1, mktime(time) )
+			next
+		  }
+		  { next }
+		  ' "$outfile" | gzip --fast >"$TmpDir/cachefile"
+		vecho -n ". "
+
+		mv "$TmpDir/cachefile" "$cachefile"
+	fi
+	gzip -d < "$cachefile" | sed -e "s<^<$tag|a|$file$ArcTag<"
+
+	if [ $status = 0 ]
+	then
+		vecho "ok"
+	else
+		echo "$tag|a|$file$ArcTag **** ERROR $status READING ZIPFILE ****"
+		vecho "**ERROR**"
+		$VERBOSE && cat "$outfile" >&2
+	fi
+	rm -f "$outfile"
+	return 0
+}
+
+
+scan_7zfile()
+{
+	local dir=$1
+	local tag=$2
+	local file=$3
+	local ftype=${4:-"7Z "}
+
+	local inputfile=$file
+	local outfile="$TmpDir/7z.out"
+	local date=
+	local time=
+	local attr=
+	local size=
+	local fname=
+	local skip=
+	local cachefile=
+	local status=0
+
+	vecho -n "  $ftype $file .. "
+
+	[ -f "$inputfile" ] || inputfile="$dir/$file"
+
+	cachefile=$(locate_cachefile "$inputfile") || return $?
+
+	if [ -s "$cachefile" ]
+	then
+		vecho -n "(cached) "
+	else
+		#    Date      Time    Attr         Size   Compressed  Name
+		# ------------------- ----- ------------ ------------  ------------------------
+		# 2014-01-17 10:42:46 ....A          471        27825  newsletter/newsletter.vmdk
+		#          1         2         3         4         5         6
+		# ....:....|....:....|....:....|....:....|....:....|....:....|
+		# 2014-01-17 10:30:34 ....A       107499               newsletter/vmware-1.log
+		# 2014-01-17 16:48:47 D....            0            0  newsletter
+		#
+		# 1	     2	      3                4
+		#
+		7z l "$inputfile" >"$outfile" 2>&1 || status=$?
+		vecho -n ". "
+
+		$Awk '
+		  (substr( $0, 21, 1 ) == "D") { next }
+
+		  /^[0-9][0-9][0-9][0-9]-/ {
+			fname = substr( $0, 54 )
+			time = $1 " " $2
+			gsub( "[-:]", " ", time )
+			printf( "%s|%s|%s\n", fname, $4, mktime(time) )
+			next
+		  }
+		  { next }
+		  ' "$outfile" | gzip --fast >"$TmpDir/cachefile"
+		vecho -n ". "
+
+		mv "$TmpDir/cachefile" "$cachefile"
+	fi
+	gzip -d < "$cachefile" | sed -e "s<^<$tag|a|$file$ArcTag<"
+
+	if [ $status = 0 ]
+	then
+		vecho "ok"
+	else
+		echo "$tag|a|$file$ArcTag **** ERROR $status READING 7Zip FILE ****"
+		vecho "**ERROR**"
+		$VERBOSE && cat "$outfile" >&2
+	fi
+	rm -f "$outfile"
+	return 0
+}
+
+
+
+
+# uses fast_fingerprint on input file to generate an md5 string, used
+# as cache filename; content will be compressed
+#
+locate_cachefile()
+{
+	local inputfile=$1
+	local cachepath=$(dirname "$WriteableDb")
+	local cachename=$(basename "${WriteableDb/.xlocate/.cache}")
+	local cachedir=
+	local filename=
+
+	[ "X$CachePath" != "X" ] && cachepath=$CachePath
+	[ "X$CacheName" != "X" ] && cachename=$CacheName
+
+	cachedir="$cachepath/$cachename"
+
+	[ -d "$cachedir" ] || {
+		mkdir "$cachedir" || return 1
+		decho "created cachedir '$cachedir'"
+	}
+	filename=$(fast_fingerprint "$inputfile") || return 1
+	filename=${filename/ */}
+
+	decho "cachefile is '$cachedir/$filename'"
+	echo "$cachedir/$filename"
+	return 0
+}
+
+
+
+do_list_databases()
+{
+	local dbfile=${1:-}
+	local dir=
+	local ifs="$IFS"
+	local files=
+	local found=
+
+	case $dbfile in
+	  /*)	# absolute path, list only this, if present
+		#
+		get_db_filename "$dbfile" ] || {
+			echo "  db file '$dbfile' not found"
+			return 1
+		}
+		return 0
+		;;
+
+	  "")	# none, list all databases in searchpath
+		#
+		found=false
+		IFS=":"
+		for dir in $Db_searchpath
+		do
+		 	files=$(ls $dir/*.$CMD $dir/*.$CMD.gz 2>/dev/null) || :
+			[ "X$files" = "X" ] && continue
+		 	echo "$files"
+		 	found=true
+		done
+		IFS="$ifs"
+		$found || echo " (no database files found in searchpath)" >&2
+		;;
+
+	  *)	# relative path, search first occurence using $Db_searchpath
+		#
+		IFS=":"
+		for dir in $Db_searchpath
+		do
+			get_db_filename "$dir/$dbfile" || continue
+			found=true
+			break
+		done
+		IFS="$ifs"
+		$found || echo "  db file '$dbfile' not found in searchpath"
+		;;
+	esac
+	return 0
+}
+
+do_long_list_databases()
+{
+	local dbfile=
+	local entries=
+	local infofile=
+	local has_infofile=
+	local version=
+	local hfmt="%10s %-4s %-4s %s\n"
+	local fmt="%10d %-4s %-4s %-8s %8d %-12s %s\n"
+	local sz=
+	local us=
+	local gr=
+	local mt=
+	local ms=
+
+	do_list_databases "$@" >/dev/null || return $?
+
+	printf "$hfmt" '#RECORDS' 'VER' 'INFO' 'FILE (MTIME/SIZE_KB/OWNER/NAME)'
+
+	do_list_databases "$@" | while read dbfile
+	do
+		echocr " scanning $dbfile ... " >&2
+		case $dbfile in
+		  *.gz)	cnt=$(gzip -d <"$dbfile" | wc -l) ;;
+		  *)	cnt=$(wc -l <"$dbfile") ;;
+		esac
+		echocr "" >&2
+		infofile=${dbfile/.gz/}
+		infofile="${infofile/.$CMD/}.usage"
+		has_infofile="-"
+		[ -f "$infofile" ] && has_infofile="yes"
+		version=$(get_dbfile_version "$dbfile")
+		version=${version:--}
+		sz=$(stat --format '%s' "$dbfile"); sz=$(( ($sz + 1023) / 1024 ))
+		us=$(stat --format '%U' "$dbfile")
+		gr=$(stat --format '%G' "$dbfile")
+		mt=$(stat --format '%y' "$dbfile"); mt=${mt/.*/}
+		ms=$(stat --format '%Y' "$dbfile")
+
+		printf "%d|$fmt" $ms "$cnt" "$version" "$has_infofile" "$mt" "$sz" "$us:$gr" "$dbfile"
+	done | sort -r -g | sed -e 's/.*|//'
+	return 0
+}
+
+
+
+
+
+do_show_info()
+{
+	local dbfile=
+
+	dbfile=$(do_list_databases "$1") || return $?
+	dbfile=${dbfile/.$CMD.gz/}
+	dbfile=${dbfile/.$CMD/}
+
+	[ -f "$dbfile.usage" ] || {
+		echo "  info for tag '$1' not exists" >&2
+		return 1
+	}
+	cat "$dbfile.usage"
+}
+
+
+
+
+
+do_search()
+{
+	local re=$1	; shift
+	local dbfiles=
+
+	while [ $# != 0 ]
+	do
+	  case ${1:-} in
+	    --)	shift; break ;;
+	    -*)	usage ;;
+	    *)	dbfiles="$dbfiles\n$1" ;;
+	  esac
+	  shift
+	done
+	
+	local ifs="$IFS"
+	local dir=
+	local stat=1
+	local fname=
+	local full_dbfiles=
+	local dbfile=
+	local be_verbose=false
+
+	# expands \n in variable
+	dbfiles=$(echo -e "$dbfiles")
+	decho "do_search(): try to use dbfiles='$dbfiles'"
+
+	if [ "X$dbfiles" = "X" ]
+	then
+		# none, uses all databases
+		decho "no dbfiles provided, using all availables"
+		full_dbfiles=$(do_list_databases)
+	else
+		IFS=$'\n'
+		for dbfile in $dbfiles
+		do
+			case $dbfile in
+				"")	;; # nothing
+
+	  			/*)	# absolute path
+	  				found=$(get_db_filename "$dbfile" 2>/dev/null) || {
+						echo "  warning: dbfile '$dbfile' not found" >&2
+						continue
+					}
+					decho "absolute path, add to list '$found'"
+					full_dbfiles="$full_dbfiles\n$DbFile"
+					;;
+	  			*)	# relative path, search using $Db_searchpath
+					IFS=":"
+					for dir in $Db_searchpath
+					do
+						# try name or path as-is
+						found=$(get_db_filename "$dir/$dbfile" 2>/dev/null) && {
+							full_dbfiles="$full_dbfiles\n$found"
+							decho "string '$dbfile', add to list '$found'"
+							break
+						}
+					done
+					[ "X$DbFile" != "X" ] && continue
+
+					# try as regexp
+					found=$(do_list_databases | egrep "/${dbfile}$")
+					[ "X$found" != "X" ] && {
+						full_dbfiles="$full_dbfiles\n$found"
+						decho "string '$dbfile' as regexp, add to list '$found'"
+						continue
+					}
+					;;
+			esac
+		done
+	fi
+
+	[ "X$full_dbfiles" = "X" ] && {
+		echo "  error: no dbfile found matching your list" >&2
+		return 1
+	}
+
+	full_dbfiles=$(echo -e "$full_dbfiles" | sed -e '/^$/d')	# removes empty lines
+
+	[ $(echo -e "$full_dbfiles" | wc -l) -gt 1 ] && be_verbose=true
+
+	IFS=$'\n'
+	for dbfile in $full_dbfiles
+	do
+		if $be_verbose
+		then
+			echo " searching '$dbfile'" >&2
+		else
+			decho "searching '$dbfile'"
+		fi
+		search_in_dbfile "$dbfile" "$@" "$re" && stat=0
+		echocr "" >&2
+	done
+
+	IFS="$ifs"
+	return $stat
+}
+
+get_db_filename()
+{
+	local dbfile=$1
+	local ext=
+
+	for ext in "" .gz .$CMD .$CMD.gz
+	do
+		[ -f "$dbfile$ext" ] && {
+			echo "$dbfile$ext"
+			return 0
+		}
+	done
+	return 1
+}
+
+search_in_dbfile()
+{
+	local file=$1; shift
+	local version=
+
+	version=$(get_dbfile_version "$file")
+
+	case "$file" in
+	  *.gz)	gzip -d <"$file" | egrep $Ignore_case_parm "$@" | filter_output "$version" ;;
+	  *)	egrep $Ignore_case_parm "$@" "$file" | filter_output "$version" ;;
+	esac
+	return 0
+}
+
+filter_output()
+{
+	local version=$1
+	local filter_exclude="| fgrep -v '$ArcTag'"
+	local filter_include=
+	local cmd=
+
+	if [ "$SortField" = "" ]
+	then
+		cmd="cat"
+	else
+		cmd="sort --field-separator='|'"
+		case $SortField in
+		  *r*)	cmd="$cmd -r $Ignore_case_parm" ;;
+		esac
+		case $SortField in
+		  *t*)	cmd="$cmd --key='5' -g"	;;	# date
+		  *s*)	cmd="$cmd --key='4' -g" ;;	# size
+		  *)	cmd="$cmd --key='3'" 	;;	# fname (default)
+		esac
+	fi
+
+	$F_search_archives	&& filter_exclude=
+	$F_search_files		&& filter_include="| fgrep '|f|'"
+	$F_search_dirs		&& filter_include="| fgrep '|d|'"
+
+	cmd="$cmd $filter_exclude $filter_include"
+	decho "search cmd: $cmd"
+
+	case $version in
+	 1)	# ver.1 format: 1=tag | 2=type | 3=filename | 4=size | 5=mtime
+		eval $cmd | print_dbv1_records
+		;;
+	 *)	# ver.0 format: 1=tag | 2=type | 3=filename
+		eval $cmd
+		;;
+	esac
+}
+
+print_dbv1_records()
+{
+	local xinfos=0
+	local terse=0
+	$F_extended_infos && xinfos=1
+	$F_terse && terse=1
+
+	$Awk -F '|' -v terse=$terse -v xinfos=$xinfos '
+		BEGIN {
+		    total = 0;
+		    nfiles = 0;
+		}
+		/^DB_VERSION: / { next }
+		{
+		    if (terse == 1) {
+			if ($2 == "d") {
+		    		printf( "%s/", $3 );
+			} else {
+		    		print $3;
+			}
+		    } else {
+		    	if (xinfos == 0 || $2 == "d") {
+			    printf( "%s %s %s\n", $1, $2, $3 );
+		    	} else {
+		   	    nfiles ++
+		   	    total += $4
+			    if ($4 > 10000000000) {
+			        printf( "%s %s %9.2fGb %s %s\n", $1, $2, $4/1024/1024/1024, strftime( "%F %T", $5 ), $3 );
+			    } else {
+			        printf( "%s %s %11d %s %s\n", $1, $2, $4, strftime( "%F %T", $5 ), $3 );
+			    }
+		    	}
+		    }
+		    next;
+		}
+		END {
+		    if (terse == 0) {
+		    	if (nfiles != 0) {
+		    		print "";
+		    		printf( "%-12s %11d\n", " FILES:", nfiles );
+		    		printf( "%-12s   %9.2f Gb (%d bytes)\n", " SIZE:", total/1024/1024/1024, total );
+		    		print "";
+		    	}
+		    }
+		}
+	'
+}
+
+
+
+
+
+
+do_update()
+{
+	local ifs="$IFS"
+	local dir=
+	local file=
+	local out=
+	local tag=
+	local cntfmt="%-20s %8d %s\n"
+	local cnt=0
+	local flist=
+	local originaldb=
+	local infofile=
+	local leaf=
+	local leafencoded=
+	local dbversion=
+
+	[ "x$WriteableDb" == "x" ] && {
+		WriteableDb=$(search_writeable_dbfile) || {
+			echo "can't find a writeable dbfile" >&2
+			return 1
+		}
+		WriteableDb=${WriteableDb/.gz}
+	}
+	out=$(basename "$WriteableDb")
+	out="$TmpDir/$out"
+
+	[ "X$Tag" != "X" ] && tag="$Tag"
+
+	$VERBOSE && print_current_settings
+	$Totals && echo -e "\n ${DummyTag}[$Mode] updating dbfile: $WriteableDb\n"
+
+	for dir
+	do
+		# 2020.08.24 lc -- why we should skip files?
+		#[ -d "$dir" ] || { echo " skip (not_dir): $dir" >&2; continue; }
+		#[ -L "$dir" ] && { echo " skip (symlink): $dir" >&2; continue; }
+		[ -d "$dir" -o -f "$dir" ] || { echo " skip (not_dir_or_file): $dir" >&2; continue; }
+
+		leaf=$dir
+		leafencoded=
+
+		$F_remove_leaf && {
+			leaf=${Leaf:-$dir}
+			leafencoded=$(echo "$leaf" | sed -e 's/\./\\./g')
+			decho "remove leaf '$leafencoded/'"
+		}
+
+		vecho -n " scan $dir ... "
+
+		if $F_remove_leaf
+		then
+			$F_record_dirs && {
+				vecho -n "(d) "
+				find "$dir" -type d | sed \
+					-e "s}^$leafencoded$}}" -e "/^$/d" \
+					-e "s}^$leafencoded/}}" -e "s}^}$tag|d|}" \
+					-e 's}$}/}' >>"$out.scan" || :
+				vecho -n "(f) "
+			}
+			find "$dir" -type f -print0 | xargs -0 --no-run-if-empty stat --format "%n|%s|%Y" \
+				| sed -e "s}^$leafencoded/}}" -e "s}^}$tag|f|}" >>"$out.scan" || :
+		else
+			$F_record_dirs && {
+				vecho -n "(d) "
+				find "$dir" -type d | sed -e "s}^}$tag|d|}" -e 's}$}/}' >>"$out.scan" || :
+				vecho -n "(f) "
+			}
+			find "$dir" -type f -print0 | xargs -0 --no-run-if-empty stat --format "%n|%s|%Y" \
+				| sed -e "s}^}$tag|f|}" >>"$out.scan" || :
+		fi
+
+		vecho "ok"
+
+		$F_search_tar && {
+			flist="$TmpDir/tarfiles"
+			extract_filenames "$out.scan" | egrep "\.tar$|\.tar.gz$|\.tar.bz2$|\.taz$" >"$flist" || :
+			decho $(wc -l "$flist")
+			while read file
+			do
+				scan_tarfile "$leaf" "$tag" "$file" >>"$out.scan" || :
+			done <"$flist"
+		}
+
+		$F_search_zip && {
+			flist="$TmpDir/zipfiles"
+			extract_filenames "$out.scan" | egrep "\.zip$|\.zip.001$" > "$flist" || :
+			decho $(wc -l "$flist")
+			while read file
+			do
+				# latest unzip commands fails to scan some zipfiles, so we
+				# use 7z instead, that can read zipfiles too
+				#scan_zipfile "$leaf" "$tag" "$file" >>$out.scan || :
+				scan_7zfile "$leaf" "$tag" "$file" "ZIP" >>"$out.scan" || :
+			done <"$flist"
+		}
+
+		$F_search_7z && {
+			flist="$TmpDir/7zfiles"
+			extract_filenames "$out.scan" | egrep "\.7z$|\.7z.001$" > "$flist" || :
+			decho $(wc -l "$flist")
+			while read file
+			do
+				scan_7zfile "$leaf" "$tag" "$file" >>"$out.scan" || :
+			done <"$flist"
+		}
+
+		[ "X$Tag" != "X" -a ! -f "$TmpDir/$Tag.usage" ] && {
+			infofile=
+			[ -f "$dir/disk-usage.txt" ] && infofile="$dir/disk-usage.txt"
+			[ -f "./disk-usage.txt" ] && infofile="./disk-usage.txt"
+			[ "X$infofile" != "X" ] && {
+				vecho " copying $infofile -> $Tag.usage"
+				cp "$infofile" "$TmpDir/$Tag.usage"
+			}
+		}
+	done
+
+	:>"$out.orig"
+
+	if $F_ReplaceDbFile
+	then
+		vecho "  will replace '$WriteableDb' ... ok"
+	else
+		[ -f "$WriteableDb.gz" ] && {
+			gzip -d <"$WriteableDb.gz" >"$out.unzipped"
+			originaldb="$out.unzipped"
+		}
+		[ -s "$WriteableDb" ] && {
+			originaldb="$WriteableDb"
+		}
+		[ "X$originaldb" != "X" ] && {
+			$Totals && cnt=$(( $(wc -l <"$originaldb") - 1))
+			if [ $Mode = "update" ]
+			then
+				vecho -n "  (update) removing records tagged '$Tag' ... "
+		  		grep -v "^$Tag|" "$originaldb" | grep -v '^DB_VERSION: ' >"$out.orig" || :
+				vecho "ok"
+			else
+				vecho -n "  (add) keep records tagged '$Tag' ... "
+		  		grep -v '^DB_VERSION: ' "$originaldb" >"$out.orig" || :
+				vecho "ok"
+			fi
+		}
+	fi
+
+	vecho -n "  cleaning duplicate records ... "
+
+	if $F_LimitRamUsage
+	then
+		local verbose=
+		$Progress && verbose='-v'
+		vecho ""
+		xlocate-cleandupes $DebugFlag $verbose --tmpdir "$TmpDir" \
+			"$Tag" "$out.orig" "$out.scan" >"$out" || exit $?
+	else
+	    awk -F '|' -v orig="$out.orig" -v tag="$Tag" '
+		(FILENAME == orig) {
+			if (tag != "" && $1 != tag) {	# pass other tags as-is
+				#print "tag=" tag " passing " $0 >"/dev/stderr"
+				print $0
+				next
+			}
+			# filetype + filename
+			id = $2 "|" $3
+			#print "storing id=" id >"/dev/stderr"
+			oldrec[id] = $4 "|" "$5"	# extra datas
+			next
+		}
+		{
+			id = $2 "|" $3
+			if (id in oldrec) {
+				delete oldrec[id]	# removes record from hash
+			}
+			print $0
+		}
+		END {
+			# flushes left old records
+			for (id in oldrec) {
+				if (id != "") {
+					print tag "|" id "|" oldrec[id]
+				}
+			}
+		}
+	    ' "$out.orig" "$out.scan" >"$out" || exit $?
+	fi
+
+	$F_SortDbFile && {
+		vecho -n " sorting ... "
+		sort -o "$out" "$out"
+		vecho "ok"
+	}
+
+	$Totals && {
+		echo
+		printf "$cntfmt" "original:" "$cnt" "$WriteableDb"
+		[ $Mode = "update" ] && printf "$cntfmt" " after tagwipe:" $(wc -l <"$out.orig") ""
+		printf "$cntfmt" " updated:" $(wc -l <"$out.scan") "$out.scan"
+		echo
+		printf "$cntfmt" "actual:" $(wc -l <"$out") "$out"
+	}
+
+	if $F_CompressDbFile
+	then
+		vecho -n "\n ${DummyTag}compressing dbfile ... "
+		$DryRun || {
+			(
+				echo "DB_VERSION: $Db_version"
+				cat "$out"
+			) | gzip --fast >"$WriteableDb.gz.tmp"
+			rm -f "$WriteableDb" "$WriteableDb.gz"
+			mv "$WriteableDb.gz.tmp" "$WriteableDb.gz"
+		}
+	else
+		vecho -n "\n copying updated file to destination ... "
+		(
+			echo "DB_VERSION: $Db_version"
+			cat "$out"
+		) >"$WriteableDb.tmp"
+		rm -f "$WriteableDb" "$WriteableDb.gz"
+		mv "$WriteableDb.tmp" "$WriteableDb"
+	fi
+	vecho " ok"
+
+
+	[ -f "$TmpDir/$Tag.usage" ] && {
+		vecho -n " ${DummyTag}saving $Tag.usage ... "
+		file=${WriteableDb/.$CMD/.usage}
+		$DryRun || cp "$TmpDir/$Tag.usage" "$file"
+		vecho "ok"
+	}
+
+	return 0
+}
+
+extract_filenames()
+{
+	local file=$1
+	$Awk -F '|' '($2 == "f") { print $3; }' "$file" | fgrep -v "$ArcTag"
+}
+
+
+is_writeable()
+{
+	local file=$1
+	local dir=$(dirname "$1")
+
+	[ -d "$dir" ] || return 1
+
+	if [ -f "$file" ]
+	then
+		[ -w "$file" ] && return 0
+	else
+		( :>"$file" ) 2>/dev/null || return 1
+		rm -f "$file"
+		return 0
+	fi
+	return 1
+}
+
+
+search_writeable_dbfile()
+{
+	local ifs="$IFS"
+	local dir=
+	local found=
+	local will_try=
+	local files=
+
+	case "$DbFile" in
+	  /*)	# absolute path, try to use it as-is (except for the .gz ext)
+		found=${DbFile/.gz/}
+		found="${found/.$CMD/}.$CMD"
+		$F_CompressDbFile && found="$found.gz"
+		is_writeable "$found" || found=
+		;;
+	  "")	# none, fallback
+	  	will_try="$DefaultDbFile"
+	  	;;
+	  */*)	# relatitve path, valid only if already present, take first
+	  	if files=$(do_list_databases | grep "$DbFile")
+		then
+			found=$(echo "$files" | head -1)
+			found=${found/.gz/}
+			found="${found/.$CMD/}.$CMD"
+			$F_CompressDbFile && found="$found.gz"
+			is_writeable "$found" || found=
+		else
+			echo " cant find '$DbFile' to write on" >&2
+			return 1
+		fi
+		;;
+	  *)	# single word, search if already present and take first
+	  	fname=$(do_list_databases | grep "/$DbFile") && {
+			found=$(echo "$fname" | head -1)
+			found=${found/.gz/}
+			found="${found/.$CMD/}.$CMD"
+			$F_CompressDbFile && found="$found.gz"
+			is_writeable "$found" || found=
+		}
+		will_try="$DbFile"
+	esac
+
+	[ "X$found" != "X" ] && {
+		echo "$found"
+		return 0
+	}
+
+	# fallback?
+	# uses first writeable location
+	[ "X$will_try" != "X" ] && {
+		IFS=":"
+		for dir in $Db_searchpath
+		do
+			fname="$dir/${will_try/.$CMD/}.$CMD"
+			$F_CompressDbFile && fname="$fname.gz"
+			is_writeable "$fname" || continue
+			found="$fname"
+			break
+		done
+		IFS="$ifs"
+	}
+
+	[ "X$found" = "X" ] && return 1
+	echo "$found"
+	return 0
+}
+
+
+
+
+do_prune()
+{
+	local prune_re=$1
+	local out=
+	local originaldb=
+	local cntfmt="%-20s %8d %s\n"
+	local cnt_before=0
+	local cnt_after=0
+	local cnt_diff=0
+
+	[ "x$WriteableDb" == "x" ] && {
+		WriteableDb=$(search_writeable_dbfile) || {
+			echo "can't find a writeable dbfile" >&2
+			return 1
+		}
+		WriteableDb=${WriteableDb/.gz}
+	}
+	out=$(basename "$WriteableDb")
+	out="$TmpDir/$out"
+	originaldb="$out.unzipped"
+
+	$VERBOSE && print_current_settings
+	$Totals && echo -e "\n ${DummyTag}[$Mode] updating dbfile: $WriteableDb\n"
+
+	[ -f "$WriteableDb.gz" ] && {
+		gzip -d <"$WriteableDb.gz" | sed -e '/^DB_VERSION: /d' >"$out.unzipped"
+	}
+	[ -s "$WriteableDb" ] && {
+		sed -e '/^DB_VERSION: /d' "$WriteableDb" >"$out.unzipped"
+	}
+
+	$Totals && {
+		cnt_before=$(wc -l <"$out.unzipped")
+		printf "$cntfmt" "original:" $cnt_before "$WriteableDb"
+	}
+
+	decho "RUNNING: egrep -v '$prune_re' '$out.unzipped' > '$out'"
+	egrep -v "$prune_re" "$out.unzipped" > "$out"
+
+	$Totals && {
+		cnt_after=$(wc -l <"$out")
+		cnt_diff=$(($cnt_before - $cnt_after))
+		printf "$cntfmt" " updated:" $cnt_after "$out"
+		printf "$cntfmt" "" $cnt_diff "records purged"
+	}
+
+	if [ $(stat --format="%s" "$out.unzipped") = $(stat --format="%s" "$out") ]
+	then
+		vecho -n "\n file unchanged ... "
+	else
+		if $F_CompressDbFile
+		then
+			vecho -n "\n ${DummyTag}compressing dbfile ... "
+			$DryRun || {
+				(
+					echo "DB_VERSION: $Db_version"
+					cat "$out"
+				) | gzip --fast >"$WriteableDb.gz.tmp"
+				rm -f "$WriteableDb" "$WriteableDb.gz"
+				mv "$WriteableDb.gz.tmp" "$WriteableDb.gz"
+			}
+		else
+			vecho -n "\n ${DummyTag}copying updated file to destination ... "
+			$DryRun || {
+				echo "DB_VERSION: $Db_version" >"$WriteableDb.tmp"
+				cat "$out" >>"$WriteableDb.tmp"
+				rm -f "$WriteableDb" "$WriteableDb.gz"
+				mv "$WriteableDb.tmp" "$WriteableDb"
+			}
+		fi
+	fi
+	vecho "ok"
+
+	return 0
+}
+
+
+
+
+
+
+create_new_config_file()
+{
+	local out=$1
+
+	[ -f "$out" ] && {
+		echo -e "\nerror: config file '$out' already exists, cannot overwrite\n" >&2
+		return 1
+	}
+
+	echo "# $out - $CMD config file
+
+#------------------------------------------------------------------------------
+# DB SEARCHPATH options
+#------------------------------------------------------------------------------
+#
+# the searchpath is a columns (\":\") separatad list of directories where the
+# dbfiles are stored and searched
+
+# use this to add search directories before the standard
+#
+#Db_searchpath_before=
+
+# use this to add search directories after the standard
+#
+#Db_searchpath_after=
+
+# use this to override the standard searchpath
+#
+#Db_searchpath_override=
+
+
+#------------------------------------------------------------------------------
+# UPDATE options
+#------------------------------------------------------------------------------
+
+# removes directory path passed as argument from filelist
+# ie: usefull to wipe out mountpoints for removable disks
+# options: --rmleaf (--no-rmleaf)
+#
+#F_remove_leaf=$F_remove_leaf
+
+# automatically uses VOLUMENAME as tag if mountpoint detected
+# on arguments directories
+# options: --autotag (--no-autotag)
+#
+#F_autotag=$F_autotag
+
+# searches inside archive files?
+# options: --zip (--no-zip), --tar (--no-tar), --7z (--no-7z)
+#
+#F_search_zip=$F_search_zip
+#F_search_tar=$F_search_tar
+#F_search_7z=$F_search_7z
+
+# should record dir names in dbfile, or only filenames?
+# option: --record-dirs (--no-record-dirs)
+#
+#F_record_dirs=$F_record_dirs
+
+# should compress dbfiles?
+# option: --compress (--no-compress)
+#
+#F_CompressDbFile=$F_CompressDbFile
+
+# should sort dbfiles before compress?
+# option: --sort (--no-sort)
+#
+#F_SortDbFile=$F_SortDbFile
+
+# should use external command xlocate-cleandupes instead of internal
+# awk program, do reduce RAM usage?
+#
+# external program:
+#  . needs perl and BerkeleyDB module (package libkerkeleydb-perl)
+#  . uses db on disk to write temp records
+#
+# internal awk:
+#  . faster, uses only RAM
+#  . don't need perl and libraries
+#
+# option: --limit-ram-usage
+#
+#F_LimitRamUsage=$F_LimitRamUsage
+
+
+#--eof $out
+" >"$out"
+	echo -e "\n  new config file '$out' created\n"
+	return 0
+}
+
+
+
+do_autotagging()
+{
+	local dir=$1
+	local mount=
+	local label=
+
+	##mountpoint "$dir" >/dev/null 2>&1 || return 0
+
+	mount=$(stat --format='%m' "$dir")
+
+	mount=$(grep " $mount " /proc/mounts) || return 0
+	mount=$(echo "$mount" | grep -v 'rootfs' | head -1 | sed -e 's/ .*//')
+	[ "X$mount" = "X" ] && return 0
+
+	label=$(blkid $mount | sed -e 's/.*: //')
+	label=$( (eval $label; echo ${LABEL:-}) )
+
+	[ "X$label" = "X" ] && return 0
+
+	[ "X$DbFile" = "X" ]	&& { DbFile=$label; DbFile_auto="(autotagged)"; }
+	[ "X$Tag" = "X" ]	&& { Tag=$label; Tag_auto="(autotagged)"; }
+
+	return 0
+}
+
+
+get_dbfile_version()
+{
+	local dbfile="$1"
+	local version=
+
+	[ -f "$dbfile" ] || return 1
+
+	case $dbfile in
+	  *.gz)	version=$(dd if="$dbfile" bs=2048k count=1 2>/dev/null | gzip -d 2>/dev/null | head -1) ;;
+	  *)	version=$(head -1 "$dbfile") ;;
+	esac
+
+	version=$(echo "$version" | grep '^DB_VERSION: ') && {
+		version=$(echo "$version" | cut -d' ' -f2)
+	}
+	[ "X$version" != "X" ] && echo "$version"
+	return 0
+}
+
+
+find_posix_awk()
+{
+	local awk=
+
+	for awk in 'awk' 'gawk'
+	do
+		awk=$(which $awk) || continue
+		$awk '{ mktime(0) }' </dev/null >/dev/null 2>&1 && {
+			Awk=$awk
+			break
+		}
+	done
+	[ "X$Awk" = "X" ] && {
+		echo -e "\ncan't find a valid awk program, I need a POSIX compliant awk" >&2
+		echo -e "  to proceed (like 'gawk')\n" >&2
+		return 1
+	}
+	return 0
+}
+
+
+
+
+
+# (MAIN)
+
+PRJ=${PRJ:-}
+
+Db_searchpath="$HOME/etc/$CMD"
+Db_searchpath_before=
+Db_searchpath_after=
+Db_version="1"
+
+if [ "x$PRJ" != "x" ]
+then
+	Config_searchpath="/etc/$CMD.conf:$PRJ/etc/$CMD.conf:$PRJ/.$CMD.conf"
+	Db_searchpath="$Db_searchpath:$PRJ/etc/$CMD:/var/lib/$CMD"
+else
+	Config_searchpath="/etc/$CMD.conf"
+	Db_searchpath="$Db_searchpath:/var/lib/$CMD"
+fi
+Config_searchpath="$Config_searchpath:$HOME/etc/$CMD.conf:$HOME/.$CMD.conf"
+LoadedCfgFiles=
+WriteableDb=
+DbFile=
+DbFile_auto=
+DefaultDbFile="_default.$CMD"
+
+# FROM CONFIG FILE(s)
+#
+F_remove_leaf=false
+F_autotag=true
+F_search_zip=false
+F_search_tar=false
+F_search_7z=false
+
+F_search_archives=false
+F_search_files=false
+F_search_dirs=false
+Ignore_case_parm=
+
+VERBOSE=true
+Totals=true
+Progress=false
+
+DEBUG=false
+DBGLEVEL=0
+VerboseFlag="-v"
+DebugFlag=
+
+Tag=
+Tag_auto=
+SortField=
+Mode="search"
+F_ReplaceDbFile=false
+F_CompressDbFile=false
+F_SortDbFile=false
+F_extended_infos=false
+F_terse=false
+F_record_dirs=false
+F_LimitRamUsage=false
+DryRun=false
+DummyTag=
+CurrentDbVersion=
+Leaf=
+CachePath=
+CacheName=
+
+ArcTag=">_>"	# used to mark files inside archives
+
+Awk=
+
+
+# early options eval, just verbose, debug and config search directives
+#
+for arg
+do
+  case $arg in
+    -v|--verbose)	VERBOSE=true; VerboseFlag='-v'; Totals=true ;;
+    -q|--quiet)		VERBOSE=false; VerboseFlag='' ;;
+    -D|--debug)		DEBUG=true; DebugFlag=$arg ;;
+    -c|--config)	shift; [ $# = 0 ] && usage "--config needs a filename"
+    			[ -f "$1" ] || usage "config file '$1' not found"
+			Config_searchpath="$Config_searchpath:$1"
+			;;
+    --)			break ;;
+  esac
+done
+
+
+# and then, load config files
+#
+ifs="$IFS"
+IFS=":"
+for file in $Config_searchpath
+do
+	[ -f "$file" ] || continue
+	decho "loading config file '$file'"
+	. "$file"
+	if [ "X$LoadedCfgFiles" = "X" ]
+
+	then
+		LoadedCfgFiles="$file"
+	else
+		LoadedCfgFiles="$LoadedCfgFiles, $file"
+	fi
+done
+IFS="$ifs"
+
+[ "X$Db_searchpath_before" != "X" ]	&& Db_searchpath="$Db_searchpath_before:$Db_searchpath"
+[ "X$Db_searchpath_after" != "X" ]	&& Db_searchpath="$Db_searchpath:$Db_searchpath_after"
+
+
+# eval remaining options
+#
+while [ $# != 0 ]
+do
+  case $1 in
+    -v|--verbose)	;;
+    -q|--quiet)		;;
+    -D|--debug)		;;
+    --progress)		Progress=true ;;
+    --totals)		Totals=true ;;
+
+    --create-conf)
+    	if [ $# -gt 1 ]
+	then
+		create_new_config_file "$2"
+		exit $?
+	else
+		create_new_config_file "$HOME/.$CMD.conf"
+		exit $?
+	fi
+	;;
+
+    -L|--list)		Mode="list" ;;
+    -LL|--long-list)	Mode="longlist" ;;
+    -U|--update)	Mode="update" ;;
+    -A|--add)		Mode="add" ;;
+    -I|--info)		Mode="info" ;;
+    -P|--prune)		Mode="prune" ;;
+
+    --tar)		F_search_tar=true ;;
+    --no-tar)		F_search_tar=false ;;
+    --zip)		F_search_zip=true ;;
+    --no-zip)		F_search_zip=false ;;
+    --7z)		F_search_7z=true ;;
+    --no-7z)		F_search_7z=false ;;
+
+    --record-dirs)	F_record_dirs=true ;;
+    --no-record-dirs)	F_record_dirs=false ;;
+
+    --rmleaf)		F_remove_leaf=true ;;
+    --no-rmleaf)	F_remove_leaf=false ;;
+    --leaf)		shift; [ $# = 0 ] && usage "usage error: --leaf requires an argument"
+    			Leaf=$1
+			;;
+
+    --limit-ram-usage)	F_LimitRamUsage=true ;;
+    --no-limit-ram-usage) F_LimitRamUsage=false ;;
+
+    --replace)		F_ReplaceDbFile=true ;;
+    --compress)		F_CompressDbFile=true ;;
+    --no-compress)	F_CompressDbFile=false ;;
+    --sort)		F_SortDbFile=true ;;
+    --no-sort)		F_SortDbFile=false ;;
+    --cache-path)	shift; [ $# = 0 ] && usage "usage error: --cache-path requires an argument"
+    			CachePath=$1
+			;;
+    --cache-name)	shift; [ $# = 0 ] && usage "usage error: --cache-name requires an argument"
+    			CacheName=$1
+			;;
+
+    --autotag)		F_autotag=true ;;
+    --no-autotag)	F_autotag=false ;;
+    -d|--db)		shift; [ $# = 0 ] && usage "usage error: --db requires an argument"
+    			DbFile=$1
+			;;
+    -t|--tag)		shift; [ $# = 0 ] && usage "usage error: --tag requires an argument"
+    			Tag=$1
+			;;
+    -s|--sortfield)	shift; [ $# = 0 ] && usage "usage error: --sortfield requires an argument"
+    			SortField=$1
+			;;
+
+    -a|--archives)	F_search_archives=true ;;
+    --files)		F_search_files=true ;;
+    --dirs)		F_search_dirs=true ;;
+    -l|--extended)	F_extended_infos=true ;;
+    -T|--terse)		F_terse=true ;;
+    -i|--ignore-case)	Ignore_case_parm="-i" ;;
+
+    -h|--help)		print_usage; print_help; exit 0 ;;
+    -n|--dry-run)	DryRun=true; DummyTag='(dummy) ' ;;
+
+    --)			shift; break ;;
+    -*|"")		usage "wrong parameter: '$1'" ;;
+    *)			break ;;
+  esac
+  shift
+done
+
+
+# sanity checks
+#
+find_posix_awk || exit $?
+
+echo "$Tag" | grep -q '[|}]' && {
+	echo "error: you cannot use '|' and '}' chars in tag name '$Tag'" >&2
+	exit 1
+}
+echo "$Leaf" | grep -q '[|}]' && {
+	echo "error: you cannot use '|' and '}' chars in leaf pattern '$Leaf'" >&2
+	exit 1
+}
+[ $F_search_zip = "true" -o $F_search_7z = "true" ] && {
+	which 7z >/dev/null 2>/dev/null || {
+		echo -e "\ncan't find a '7z' program, needed to stan zip and 7z files" >&2
+		exit 1
+	}
+}
+if [ "$Mode" = "search" ]
+then
+	case $SortField in
+  	  "") ;;	# null, ok
+  	  t|tr|rt) ;;	# time, ok
+	  s|sr|rs) ;;	# size, ok
+	  n|nr|rn) ;;	# name, ok
+	  *)
+  		echo -e "\ninvalid --sortfield '$SortField', must be one of:" >&2
+		echo -e "   't' (time), 's' (size), 'n' (filename)" >&2
+		echo -e "   'r' can be added to reverse sort order\n" >&2
+		exit 1
+		;;
+	esac
+else
+  	[ "X$SortField" != "X" ] && {
+		echo -e "\n--sortfield can be used only in 'search' mode\n" >&2
+		exit 1
+	}
+fi
+
+
+if $VERBOSE
+then
+	. /lib/ku-base/echo.sh
+else
+	# dummy func
+	echocr() { :; }
+fi
+
+
+trap 'echo -e "\n*INTR*\n"; exit 255' 1 2 3
+trap 'echo -e "\n$0: unexpected error $? at $LINENO\n"' ERR
+trap "cleanup" EXIT
+
+case $Mode in
+  list)
+  	[ "X$Tag" != "X" ]	&& usage "error: option --tag incompatible with mode '$Mode'"
+	do_list_databases "$@" || exit $?
+	exit $?
+	;;
+  longlist)
+  	[ "X$Tag" != "X" ]	&& usage "error: option --tag incompatible with mode '$Mode'"
+  	do_long_list_databases "$@" || exit $?
+	;;
+  info)
+  	[ $# != 1 ]		&& usage "error: '$Mode' mode requires exactly one argument"
+	do_show_info "$1" || exit $?
+	;;
+  search)
+  	[ "X$Tag" != "X" ]	&& usage "error: option --tag incompatible with mode '$Mode'"
+	[ $# = 0 ]		&& usage "error: '$Mode' mode requires a search expression"
+	$DryRun			&& { print_current_settings; exit 0; }
+	do_search "$@" || exit $?
+	;;
+  prune)
+  	[ "X$Tag" != "X" ]	&& usage "option --tag incompatible with mode '$Mode'"
+	[ $# = 0 ]		&& usage "'$Mode' mode requires a search expression"
+	if $DEBUG
+	then
+		TmpDir="$TMPDIR/$CMD-tmp"
+		rm -rf "$TmpDir"
+		mkdir "$TmpDir"
+		decho "TmpDir=$TmpDir" >&2
+	else
+		TmpDir=$(mktemp -d "$TMPDIR/$CMD-XXXXXXXX")
+	fi
+	do_prune "$@" || exit $?
+	;;
+  add|update)
+	[ $# = 0 ]		&& usage "'$Mode' mode needs at least one directory to scan"
+	[ $# -gt 1 -a "X$Leaf" = "X" ] \
+				&& usage "you must define Leaf (--leaf option) when scanning multiple dirs"
+	if $DEBUG
+	then
+		TmpDir="$TMPDIR/$CMD-tmp"
+		rm -rf "$TmpDir"
+		mkdir "$TmpDir"
+		decho "TmpDir=$TmpDir" >&2
+	else
+		TmpDir=$(mktemp -d "$TMPDIR/$CMD-XXXXXXXX")
+	fi
+	$F_autotag && do_autotagging "$1"
+
+	# atm, update is possibile only with Tag defined
+	[ "X$Tag" = "X" ] && ReplaceDbFile=true
+
+  	do_update "$@" || exit $?
+  	;;
+esac
+
+exit 0

@@ -1,0 +1,304 @@
+#!/usr/bin/perl -w
+#
+# __copy1__
+# __copy2__
+#
+# finds the oldest (or newest) file in the given directories and/or filelist
+#
+my $CMD		= "oldest";
+my $CMDVER	= "1.16";
+my $CMDSIG	= "$CMD v$CMDVER (2021-12-18)";
+
+my $OLDEST;
+my $OLDESTTIME;
+my $NEWEST;
+my $NEWESTTIME;
+my $IGNORE_LE;
+my $IGNORE_GT;
+
+my $F_NEWEST	= 0;
+my $F_OLDEST	= 1;
+my $F_ZERO	= 0;
+my $VERBOSE	= 1;
+my $Terse	= 0;
+my $Debug	= 0;
+
+my $regexp;
+my $pathre;
+my $xregexp;
+my $xpathre;
+
+my @args;
+
+
+# argument parsing
+#
+PARMS: while (@ARGV) {
+    CASE: {
+    	$_ = shift(@ARGV);
+
+    	if ($_ eq "-n" || $_ eq "--newest")	{ $F_OLDEST = 0; $F_NEWEST = 1; last CASE; }
+	if ($_ eq "-v" || $_ eq "--verbose")	{ $VERBOSE = 1; last CASE; }
+	if ($_ eq "-t" || $_ eq "--terse")	{ $Terse = 1; last CASE; }
+	if ($_ eq "-q" || $_ eq "--quiet")	{ $VERBOSE = 0; last CASE; }
+	if ($_ eq "-0" || $_ eq "--zero")	{ $F_ZERO = 1; last CASE; }
+	if ($_ eq "-D" || $_ eq "--debug")	{ $Debug = 1; $VERBOSE = 0; last CASE; }
+    	if ($_ eq "--re") {
+		usage()	if (!scalar @ARGV);
+		$regexp = shift(@ARGV);
+		last CASE;
+	}
+    	if ($_ eq "--pe") {
+		usage()	if (!scalar @ARGV);
+		$pathre = shift(@ARGV);
+		last CASE;
+	}
+    	if ($_ eq "--rx") {
+		usage()	if (!scalar @ARGV);
+		$xregexp = shift(@ARGV);
+		last CASE;
+	}
+    	if ($_ eq "--px") {
+		usage()	if (!scalar @ARGV);
+		$xpathre = shift(@ARGV);
+		last CASE;
+	}
+    	if ($_ eq "--xle") {
+		usage()	if (!scalar @ARGV);
+		$IGNORE_LE = shift(@ARGV);
+		$IGNORE_LE = `date --date "$IGNORE_LE" '+%s'` or die( "\n" );
+		chomp($IGNORE_LE);
+		last CASE;
+	}
+	if ($_ eq "--") { last PARMS; }
+	if ($_ =~ /^-/) { usage(); }
+	push( @args, $_ );
+    }
+}
+push( @args, @ARGV );
+
+usage()	if (!@args);
+
+
+$! = 0	if ($VERBOSE);	# unbuffered output
+
+
+my %OLDESTS;
+my %NEWESTS;
+my $Prog	= 0;
+
+my $path;
+my @files;
+my $fname;
+
+for $path (@args) {
+	if (-d $path) {
+		do_search( $path );
+		echocl();
+	} else {
+		$fname	= $path;
+		$fname	=~ s#.*/##;
+
+		if ($path =~ /\//) {
+			next	if (defined $pathre && $path !~ /$pathre/i);
+			next	if (defined $xpathre && $path =~ /$xpathre/i);
+		}
+		next	if (defined $regexp && $fname !~ /$regexp/i);
+		next	if (defined $xregexp && $fname =~ /$xregexp/i);
+		# filenames from command line are grouped like they are in the same dir
+		push( @files, $path );
+	}
+}
+
+if (scalar @files) {
+	do_search( @files );
+}
+
+if ($Terse) {
+	if ($F_OLDEST) {
+		map { print $OLDESTS{$_}, "\n"; }	sort( keys( %OLDESTS ) );
+	} else {
+		map { print $NEWESTS{$_}, "\n"; }	sort( keys( %NEWESTS ) );
+	}
+} else {
+	if ($F_OLDEST) {
+		map { print( list( $OLDESTS{$_} ) ); }	sort( keys( %OLDESTS ) );
+	} else {
+		map { print( list( $NEWESTS{$_} ) ); }	sort( keys( %NEWESTS ) );
+	}
+}
+exit( 0 );
+
+
+
+
+
+
+
+
+
+sub usage
+{
+	die( "
+== $CMDSIG - finds oldest (or newest) file in the given directories ==
+
+usage: $CMD [options] dir(s) and/or file(s) ...
+
+options:
+ -t|--terse	shows filenames only, instead of dates + filenames
+ -q|--quiet	be quiet
+ -v|--verbose	be verbose (progress status)
+ -n|--newest	invert logic (find newest file/dir)
+ -0|--zero	consider files with epoch-date, 1970-01-01 00:00:00
+ 	        (seconds=0, default is ignore them)
+ -D|--debug	print debug messages on stderr (implies -q)
+
+ --re regexp	consider only files matching 'regexp'
+ --pe regexp	consider only full paths matching 'regexp'
+
+ --rx regexp	excludes files matching 'regexp'
+ --px regexp	excludes full paths matching 'regexp'
+
+ --xle date	exclude files with date <= 'date'
+ --xgt date	exclude files with date >= 'date'
+
+notes:
+ . ignorecase is always used on regexp
+ . regexp parms can be used only once, but since extended regexp are used,
+   you can combine multiple with pipe char (see egrep manual)
+\n" );
+}
+
+
+# brutal hack to display progress lines
+sub echocl {
+	print( STDERR "\r\e[K", @_ )	if ($VERBOSE);
+	return 1;
+}
+
+sub pdebug {
+	return 1	if (!$Debug);
+	if (!scalar @_) {
+		print( STDERR "\n" );
+	} else {
+		my $fmt = shift;
+		print( STDERR "D# " . sprintf( $fmt, @_ ) );
+	}
+	return 1;
+}
+
+sub do_search {
+	$OLDEST		= "";
+	$OLDESTTIME	= 9999999999999;
+	$NEWEST		= "";
+	$NEWESTTIME	= 0;
+
+	if (-d $_[0]) {
+		pdebug( "  scandir() on do_search(%s)\n", join( ", ", @_ ) );
+		scandir( $_[0] );
+	} else {
+		pdebug( "  scanfiles() on do_search(%s)\n", join( ", ", @_ ) );
+		scanfiles( @_ );
+	}
+
+	if ($OLDEST ne "") {
+		$Prog++;
+		$key			= $OLDESTTIME . sprintf( "-%04d", $Prog );
+		$OLDESTS{ $key }	= $OLDEST;
+		pdebug( "   OLDEST{%s}=%s\n", $key, $OLDEST );
+	}
+	if ($NEWEST ne "") {
+		$Prog++;
+		$key			= $NEWESTTIME . sprintf( "-%04d", $Prog );
+		$NEWESTS{ $key }	= $NEWEST;
+		pdebug( "   NEWEST{%s}=%s\n", $key, $NEWEST );
+	}
+	return 1;
+}
+
+
+sub scandir {
+	my ($dir)	= @_;
+	my $DIR		= $dir;
+	my @files;
+	my @dirs;
+
+	return	if (! -d $dir);
+
+	pdebug();
+	pdebug( "   scandir( %s )\n", join( ", ", @_ ) );
+	echocl( sprintf( " %-.78s", "scanning dir: $dir" ) );
+
+	opendir( DIR, $dir )	or die "can't read dir $dir: $!\n";
+	while ($_ = readdir( DIR ) ) {
+		next	if ($_ eq "." || $_ eq "..");
+		next	if (-l "$dir/$_");
+
+		if (-d "$dir/$_") {
+			push( @dirs, "$dir/$_" );
+		} else {
+			next	if (defined $regexp && $_ !~ /$regexp/i);
+			next	if (defined $pathre && "$dir/$_" !~ /$pathre/i);
+			next	if (defined $xregexp && $_ =~ /$xregexp/i);
+			next	if (defined $xpathre && "$dir/$_" =~ /$xpathre/i);
+			push( @files, "$dir/$_" );
+		}
+	}
+	closedir( DIR );
+
+	return 0	if (!@files && !@dirs);
+
+	scanfiles( @files );
+
+	foreach $_ (@dirs) {
+		scandir($_);
+	}
+
+	return 1;
+}
+
+
+sub scanfiles
+{
+	my ($key,$changed);
+  	my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,$atime,$mtime,$ctime,$blksize,$blocks);
+
+	pdebug( "   scanfiles( %s )\n", join( ", ", @_ ) );
+	foreach $_ (@_) {
+  		($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+                        $atime,$mtime,$ctime,$blksize,$blocks)
+	                          = stat($_);
+
+		if (!defined $mtime) {
+			printf( STDERR " skip non-readable file '%s'\n", $_ )	if ($VERBOSE || $Debug);
+			next;
+		}
+		next	if ($mtime == 0 && !$F_ZERO);
+		next	if (defined $IGNORE_LE && $mtime <= $IGNORE_LE);
+		next	if (defined $IGNORE_GT && $mtime >= $IGNORE_GT);
+
+		if (defined $mtime && $mtime > $NEWESTTIME) {
+			$NEWEST		= $_;
+			$NEWESTTIME	= $mtime;
+		}
+		if (defined $mtime && $mtime < $OLDESTTIME) {
+			$OLDEST		= $_;
+			$OLDESTTIME	= $mtime;
+		}
+	}
+
+	return 1;
+}
+
+
+sub list
+{
+	my ($file) = @_;
+	my @tmp	= stat( $file );
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($tmp[9]);
+
+	$file	=~ s/^\.\///;
+
+	return sprintf( "%4d-%02d-%02d %02d:%02d:%02d %s\n",
+		$year + 1900, $mon + 1, $mday, $hour, $min, $sec, $file );
+}

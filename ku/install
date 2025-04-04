@@ -1,0 +1,32 @@
+:TOOLKIT	ku-file-utils
+:VERSION	1.0
+:RELEASE	ku25.03a
+:SIGNATURE	${VERSION}-${RELEASE} (2025-03-12)
+
+:maintainer	Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+:homepage	http://www.kubiclabs.com/
+:copy1		(c) $maintainer
+:copy2		for copyright see /usr/share/doc/$TOOLKIT/copyright
+
+:default_mode	775
+
+:dir		$bindir
+:dir		$sbindir
+:dir		$docdir
+:dir		$etcdir
+:dir		$etcdir/default
+:dir		$etcdir/ku-autosync
+:dir		/usr/share/man/man1
+
+:default_mode	775
+
+bin/*		$bindir/
+sbin/*		$sbindir/
+
+
+:default_mode	644
+
+doc/*		$docdir/
+default/*	$etcdir/default/
+etc_autosync/*	$etcdir/ku-autosync/
+man1/*		/usr/share/man/man1/

@@ -1,0 +1,118 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+
+usage()
+{
+	echo "
+usage:
+	$CMD [options] [filesystem]
+	$CMD [options] set [filesystem]
+	$CMD [options] diff [filesystem]
+
+options:
+ -q		be quiet (effective only in --set mode)
+ --terse	returns number alone
+ --noclean	don't cleanup $STOREFILE after run
+
+modes:
+ set	set current disk usage in $STOREFILE (see --diff)
+ diff	get previously saved disk usage and compute difference,
+ 	use --noclean also to preserve storefile and have
+	subsequents runs without intermediate 'set'
+
+" >&2
+	exit 127
+}
+
+cleanup()
+{
+	$F_CLEANUP && rm -f $STOREFILE
+}
+
+csize()
+{
+	echo -e "scale=2\n$*" | bc
+}
+
+
+show_values()
+{
+  	if $F_TERSE
+	then
+		echo $used
+	else
+		free=$(echo "$buf" | cut -d' ' -f4)
+		perc=$(echo "$buf" | cut -d' ' -f5)
+		printf "%10.2f MiB used, %10.2f MiB free (%s)\n" \
+			$(csize $used/1024) $(csize $free/1024) $perc
+	fi
+}
+
+
+
+# (MAIN)
+
+VERBOSE=true
+F_TERSE=false
+F_CLEANUP=true
+MODE="show"
+STOREFILE="$HOME/$CMD.tmp"
+
+while [ $# != 0 ]
+do
+ case $1 in
+  -q|--quiet)	VERBOSE=false ;;
+  --terse)	F_TERSE=true ;;
+  --noclean)	F_CLEANUP=false ;;
+  set)		MODE="set" ;;
+  diff)		MODE="diff" ;;
+  --)		break ;;
+  -*|"")	usage ;;
+  *)		break ;;
+ esac
+ shift
+done
+
+[ $# != 1 ] && usage
+
+filesystem=$1
+
+# 1		      2		  3         4            5
+# Filesystem          1024-blocks    Used Available Capacity Mounted on
+# /dev/mapper/lv-1204    16513960 9835168   5839932      63% /
+
+buf=$(df -P $filesystem | tail -1 | sed -e 's/  */ /g')
+
+used=$(echo "$buf" | cut -d' ' -f3)
+
+case $MODE in
+  show)
+ 	show_values
+	;;
+  set)
+	$VERBOSE && show_values
+  	echo $used >$STOREFILE
+	;;
+  diff)
+  	[ -s $STOREFILE ] || {
+		echo "err: file '$STOREFILE' not found or epmty" >&2
+		echo "     you need to launch '$CMD set' before" >&2
+		exit 1
+	}
+	oldused=$(cat $STOREFILE)
+	diff=$(expr $used - $oldused)
+	if $F_TERSE
+	then
+		echo $diff
+	else
+		printf "%10.2f MiB diff\n" $(csize $diff/1024)
+	fi
+	cleanup
+	;;
+esac
+
+exit 0

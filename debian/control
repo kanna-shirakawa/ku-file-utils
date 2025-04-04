@@ -1,0 +1,34 @@
+Source: ku-file-utils
+Section: klabs
+Priority: extra
+Build-Depends: debhelper (>= 7)
+Standards-Version: 3.8.0
+Maintainer: Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+Homepage: http://www.kubiclabs.com/
+
+Package: ku-file-utils
+Architecture: all
+Depends: ku-base (>= 1.1-ku6), gawk
+Replaces: ku-arc-utils
+Conflicts: ku-arc-utils
+Description: KUBiC Labs utils for files management/archiving
+  - ku-timestamp-rename: find the newest file in the directory tree,
+      change di dir mtime accordlying, optional renames the dir
+      prepending the resulting timestamp
+  - ku-storicize: archives a list of directories, optionally
+      compressing, timestamping, and removing the original content
+  - ku-compressdir: simple frontend to different archive programs,
+      for a simplified, uniform arguments format
+  .
+  - xlocate: a locate-like util, tailored for external disks
+      management, and focused on portability (file tagging, files
+      details, dbfile plain text format)
+  - xlocate-diskinfos: a companion for xlocate, to extract and
+      store some usefull infos of external disks (desc, size, usage,
+      fstype of main partition, etc)
+  - 7z-rmo: emulates beheaviour of 'zip -rmo' for p7zip files
+  - fast_fingerprint: really fast pseudo-md5 files fingerprint
+  - fdupe: search file dupes (using fast fingerprint)
+  .
+  - blocksync: rsync-like but for block devices
+  - mkfs.ext4-nonlazy: just a wrapper to run with lazy_init_table=0

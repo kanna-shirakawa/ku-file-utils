@@ -1,0 +1,146 @@
+#!/bin/bash
+#
+CMD=$(basename $0)
+CMDVER="1.1"
+CMDSTR="$CMD v$CMDVER (2019/12)"
+
+. /lib/ku-base/echo.sh
+
+usage()
+{
+	echo "
+=== $CMDSTR === removes local files against target dir ===
+
+usage: $CMD [options] target_dir
+
+options:
+ -v|--verbose		be verbose (default)
+ -q|--quiet		be quiet
+ -l|--long		show detailed infos (on stdout)
+ -n|--dry-run		don't do anything (default)
+ -x|--exec		remove files/dirs
+ -u|--ignore-owner	ignore owner and grou when comparing files
+ -D|--debug		debug on
+" >&2
+	exit 1
+}
+
+
+pstats()
+{
+	local disp=
+	local fmt="%.2f%s"
+	local free=$(df -k . | tail -1)
+
+	free=$(echo $free | cut -d' ' -f4)
+	disp=$(echo -e "scale=2\n$free/1024" | bc)
+	disp=$(printf "$fmt" "$disp" "M")
+	echocr " ${dummy}miss: $miss, diff: $diff, removed: $removed, free: $disp"
+}
+
+# (MAIN)
+
+VERBOSE=true
+DEBUG=false
+f_long=false
+f_exec=false
+f_owner=true
+target=
+dummy=
+
+while [ $# != 0 ]
+do
+  case $1 in
+    -v|--verbose)	VERBOSE=true ;;
+    -q|--quiet)		VERBOSE=false ;;
+    -l|--long)		f_long=true ;;
+    -x|--exec)		f_exec=true ;;
+    -n|--dry-run)	f_exec=false ;;
+    -u|--ignore-owner)	f_owner=false ;;
+    -D|--debug)		DEBUG=true ;;
+    -*|"")		usage ;;
+    *)			break ;;
+  esac
+  shift
+done
+[ $# != 1 ] && usage
+
+target=$1
+
+[ -d "$target" ] || {
+	echo "error: target dir '$target' doesn't exists" >&2
+	exit 1
+}
+
+if $f_exec
+then
+	RM="/bin/rm"
+	dummy=
+else
+	RM=":"
+	dummy="(dummy) "
+fi
+
+if $f_owner
+then
+	stat_format="%s %Y %U %G"
+else
+	stat_format="%s %Y"
+fi
+
+$VERBOSE || pstat() { :; }
+
+removed=0
+miss=0
+diff=0
+ptime=$(date +%s)
+
+IFS_orig=$IFS
+IFS=$(echo -e "\n\r")
+
+for file in $(find * -type f)
+do
+	IFS=$IFS_orig
+
+	ts=$(date +%s)
+	[ $ts != $ptime ] && {
+		pstats
+		ptime=$ts
+	}
+
+	[ -f "$target/$file" ] || {
+		$f_long && echo "-- $file"
+		miss=$(($miss + 1))
+		continue
+	}
+	here=$(stat --format "$stat_format" "$file")
+	other=$(stat --format "$stat_format" "$target/$file")
+	$DEBUG && echo "D# HERE=$here"
+	$DEBUG && echo "D# TARG=$other"
+
+	[ "$here" != "$other" ] && {
+		$f_long && ls -l "$file" "$target/$file"
+		diff=$(($diff + 1))
+		continue
+	}
+	$f_long && echo "RM $file"
+	$RM "$file"
+	removed=$(($removed + 1))
+done
+echocr
+pstats
+echo >&2
+echo >&2
+
+echo -n " ${dummy}cleaning dirs ... " >&2
+cnt=$(find . -type d | wc -l)
+echo -n "before: $cnt ... " >&2
+
+$f_exec && {
+	find . -depth -type d -print0 | xargs -0 rmdir 2>/dev/null
+}
+cnt=$(find . -type d | wc -l)
+echo "after: $cnt" >&2
+
+echo >&2
+exit 0

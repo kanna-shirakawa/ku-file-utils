@@ -1,0 +1,99 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.0"
+CMDSTR="$CMD v$CMDVER (2021-12-19)"
+
+
+usage()
+{
+	echo "
+usage: $CMD [options] 7z-file
+
+options:
+  -n|--dry-run		do not modify anything
+  --verbose		be nice (default: the \$VERBOSE env var)
+  --quiet		oh, stay quiet, please
+" >&2
+	exit 1
+}
+
+
+
+# list content, get only lines starting with a date, skip dirs
+#
+get_the_recent_file()
+{
+	local zipfile=$1
+	local dd="[0-9][0-9]"
+	local buf=
+
+	buf=$(7z l "$zipfile") || return $?
+
+	# 2001-05-04 00:18:38 ....A          354          621  2001 work/readme.txt
+	# 2001-06-24 17:11:02 ....A          809               2001 work/capture.vcf
+	# 2021-01-30 10:54:33 D....            0            0  2001 work
+
+	echo "$buf" | grep "^$dd$dd-$dd-$dd " | grep -v '^................... D' | sort | tail -1
+	return 0
+}
+
+
+
+# (MAIN)
+
+f_exec=true
+VERBOSE=${VERBOSE:-true}
+
+while [ $# != 0 ]
+do
+  case $1 in
+    -n|--dry-run)	f_exec=false ;;
+    -v|--verbose)	VERBOSE=true ;;
+    -q|--quiet)		VERBOSE=false ;;
+    --)			break ;;
+    -*)			usage ;;
+    *)			break ;;
+  esac
+  shift
+done
+[ $# != 1 ] && usage
+
+zipfile="$1"
+[ -e "$zipfile" ] || zipfile="$1.7z"
+
+[ -e "$zipfile" ] || {
+	echo -e "\n$CMD error: can't find '$1' or '$1.7z'\n" >&2
+	exit 1
+}
+
+recent=$(get_the_recent_file "$zipfile")
+
+set -- $recent
+recent_ts="$1 $2"
+
+$VERBOSE && {
+	# damn empty fields (compression size may be empty)
+	# needs to rely on string lengths, this is BAD
+	#
+	# 2001-06-24 17:11:02 ....A          809               2001 work/capture.vcf
+	#          1         2         3         4         5
+	# ....:....|....:....|....:....|....:....|....:....|....:....|
+	#
+	file=${recent:53}
+	echo -e "\n set timestamp from: $recent_ts '$file'\n"
+}
+
+if $f_exec
+then
+	touch --date "$recent_ts" "$zipfile"
+	st=$?
+else
+	echo " (dummy) touch --date '$recent_ts' '$zipfile'" >&2
+fi
+
+exit $st
+

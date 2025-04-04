@@ -1,0 +1,181 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="2.3"
+CMDSTR="$CMD v$CMDVER (2022-09-23)"
+
+usage()
+{
+	echo "
+== $CMDSTR == removes file that are the same in a target dir ==
+
+usage: $CMD [options] targetdir
+
+options:
+  -v	verbose
+  -l	long (extra verbose, shows differences)
+  -x	execute (default: dry run, shows actions only)
+  -r	recursive (default: $f_recursive)
+  --nr	no recursive
+">&2
+	cleanup
+	exit 1
+}
+
+vecho()
+{
+	$VERBOSE && echo "$@"
+}
+
+vechocr()
+{
+	$VERBOSE && echo -en "\r\033[K$@"
+}
+
+cleanup()
+{
+	rm -f $templist $tempdiff $tempdirs
+}
+
+
+purgedir()
+{
+	local checkdir=$1
+	local file=
+	local fname=
+	local tfname=
+
+	cd "$from/$checkdir" || return $?
+
+	[ -d "$realtarget/$checkdir" ] || {
+		vecho "  no DIR $checkdir" >&2
+		return 1
+	}
+
+	vecho "  checking $checkdir" >&2
+	cp /dev/null $templist
+	
+	ls -a | while read file
+	do
+		fname=$(echo "$checkdir/$file" | sed -e 's/^\.\///')
+		tfname="$realtarget/$checkdir/$file"
+
+		[ -f "$file" ] || continue
+
+		[ -f "$tfname" ] || {
+			$f_long || vecho "    miss  $fname" >&2
+			$f_long && echo -e "\n\n======> no target $fname\n\n"
+			continue
+		}
+
+		vechocr "  $fname" >&2
+
+		if cmp "$file" "$tfname" >/dev/null 2>&1
+		then
+			vechocr "    =     $fname\n" >&2
+			echo "$file" >>$templist
+		else
+			$f_long || vechocr "    DIFF  $fname\n" >&2
+			$f_long && {
+				diff "$file" "$tfname" >$tempdiff
+				echo -e "\n\n
+-------------------------------------------------------------------------------
+$(ls -l \"$file\")
+$(ls -l \"$tfname\")
+-------------------------------------------------------------------------------
+"
+				echo -e "\n===== < $fname ===== > $tfname\n"
+				cat $tempdiff
+			}
+		fi
+	done
+	vechocr
+
+	$f_execute && {
+		[ -s $templist ] && {
+			vecho -n "    removing ... " >&2
+			tr "\n" "\000" < $templist | xargs -0 /bin/rm -f
+			vecho "ok" >&2
+		}
+		cd /tmp
+		rmdir "$from/$checkdir" 2>/dev/null && \
+			vecho "    removed DIR $from/$checkdir" >&2
+	}
+	return 0
+}
+
+
+
+#	(MAIN)
+
+#	eval args
+#
+f_verbose=false
+f_execute=false
+f_recursive=true
+f_long=false
+VERBOSE=true
+targetdir=
+
+trap "cleanup; exit 255" 1 2 3
+
+
+while [ $# != 0 ]
+do
+ case "$1" in
+  -q|--quiet)	VERBOSE=false ;;
+  -v|--verbose)	VERBOSE=true ;;
+  -l|--long)	VERBOSE=true ; f_long=true ;;
+  -x|--execute) f_execute=true ;;
+  -r|--recurse) f_recursive=true ;;
+  --nr|--norecurse)
+  		f_recursive=false ;;
+  --)		break ;;
+  ""|-*)	usage ;;
+  *)		[ -z $targetdir ] || usage
+  		targetdir=$1
+		;;
+ esac
+ shift
+done
+[ -z $targetdir ] && usage
+
+
+[ -d "$targetdir" ] || {
+	echo "target dir '$targetdir' not found" >&2
+	exit 1
+}
+realtarget=$( (cd "$targetdir" ; pwd) ) || exit 1
+from=$(pwd)
+[ "$realtarget" = "$from" ] && {
+	echo "something wrong: source and target dirs are the same!" >&2
+	exit 1
+}
+
+templist=$(mktemp /tmp/$CMD-list-XXXXXXX) || exit $?
+tempdiff=$(mktemp /tmp/$CMD-diff-XXXXXXX) || exit $?
+tempdirs=$(mktemp /tmp/$CMD-dirs-XXXXXXX) || exit $?
+
+cp /dev/null $tempdirs
+relativetarget=$(echo $realtarget | sed -e "s#$from/##")
+
+if $f_recursive
+then
+	vechocr "  finding dirs ..."
+	find . -depth -type d -print | grep -v '^\.\.$' >$tempdirs
+	set $(wc -l $tempdirs)
+	vechocr "  $1 directories\n"
+
+	while read dir
+	do
+		[ "$dir" != "$relativetarget" ] && purgedir "$dir"
+	done < $tempdirs
+else
+	purgedir .
+fi
+
+cleanup
+exit 0

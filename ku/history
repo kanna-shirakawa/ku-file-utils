@@ -1,0 +1,293 @@
+2025-03-12 14:11:47 1.0 ku25.03a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/xlocate-diskinfos
+    - new: DO_CONTENT var in metafile, produces "disk-content.txt", with first level
+    	   directory summary
+	   related new options, to override var: --do-content, --no-do-content
+    - fix: now scans dotfiles/dotdirs, too
+
+  * bin/xlocate
+    - fix: when scanning multiple dirs, copy disk usage file, if any, only once
+    - fix: usage for add/update modes
+    - fix: --leaf option is mandatory when scanning multiple dirs
+
+2025-02-03 09:09:06 1.0 ku25.02b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/ku-bitlocker-{mount,umount}
+    - new: script to mount / umount bitlocker partitions (a simple frontend for
+    	   "dislocker" utility)
+
+2025-02-01 14:24:11 1.0 ku25.02a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * sbin/dmname
+    - fix: fails to detect device major in dmsetup
+
+2025-01-03 10:03:29 1.0 ku25.01a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/bscp
+    - new: blockcopy util relies on python2, and doesn't work anymore with python3
+    	   instead of modifying it, replaced by a new util "bscp" that does the same
+	   thing (in a slight different way)
+	   NOTE that the command syntax is similar to blockcopy, but NOT THE SAME
+
+2024-09-02 06:48:34 1.0 ku24.09a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/rdp, bin/rdp-credentials
+    - new: wrap script to xfreerdp; uses .rdp.credentials file to store remotes infos,
+    	   the file can be crypted and is searched iin different directories
+	   not exactly a file util, but I have no better package to store them ;)
+
+2024-04-10 11:10:55 1.0 ku24.04a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/mirror
+    - fix: untrapped rsync error exit
+
+2024-03-07 07:45:08 1.0 ku23.11a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * sbin/dmname
+    - new: this util prints the human readable name (ie: the fs name) given
+    	   a dm-* or loop* device
+
+  * bin/iostat-fancy
+    - mod: improved fs names decoding (uses dmname script)
+
+  * bin/blocksync
+    - mod: don't call "ssh" and "sudo" if remote = localhost
+    - mod: minor changes to output messages
+
+2023-10-09 09:40:55 1.0 ku23.10a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * bin/ddtime
+    - fix: typo in die() call, line 40 (was dir instead of die)
+
+2023-08-27 18:19:39 1.0 ku23.08b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * debian/compat
+    - upd: (devuan daedalus) raised to 10
+
+2023-08-27 01:55:44 1.0 ku23.08a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * iostat-fancy
+    - new: iostat wrapper the replaces meaningless dm-* names with fancy ones, got
+    	   from lvm devices or partition labels; options can be saved in cfg file
+	   under $HOME
+
+2023-06-11 12:34:21 1.0 ku23.06a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * lvusage
+    - fix: recent lvscan sometimes prints sizes with "<" symbol in front (wtf?),
+    	   causing printf to complain (first seen on Devuan chimaera)
+
+2023-03-22 00:37:53 1.0 ku23.03c Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * fdupe
+    - fix: -D (--debug) was not accepted as valid option
+    - fix: long options are accepted now
+    - mod: PRINTF internal command
+
+2023-03-14 11:51:17 1.0 ku23.03b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * debian/rules (debian.in/rules)
+    - fix: reverted the changes of last release (compatibility issues raised by updating
+    	   release files on old systems are solved, see changes to ku-jtools)
+
+2023-02-25 19:09:32 1.0 ku23.02a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * debian/rules (debian.in/rules)
+    - fix: force backward compatibility gzip format on newer distros (that defaults to xz):
+           added -Zgzip to dh_builddeb
+
+2022-12-19 14:42:19 1.0 ku22.12a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * ku-timestamp-rename
+    - mod: now say if the file/dir is not renamed because already timestamped
+
+2022-10-18 18:03:57 1.0 ku22.10a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * xlocate
+    - mod: now you can pass filename to --create-conf option
+
+  * kupurge
+    - mod: replaced '--null' with '-0' to xargs call to cope with old xargs versions
+
+2022-08-04 09:26:43 1.0 ku22.07c Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * xlocate
+    - add: total files count and size in search mode (long output forma)
+
+2022-07-21 13:13:27 1.0 ku22.07b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * xlocate
+    - add: --sortfield (-s) option, for sorting output, can be t=time, s=size, n=name,
+    	   plus 'r' to reverse order
+    - mod: the '-l' meaning is changed, now is used to request extended output, to be
+    	   coherent with commond *nix commands; these options are changed:
+	   	-l  was -x, for long output in search mode
+		-L  was -l, for listing dbfiles
+		-LL was -L, for listing dbfiles with details
+
+  * dug
+    - mod: replaced 'bc' command with custom embedded perl script (bc is not available
+    	   on some embedded systems, perl maybe is ... ok not a real deal, I must admit)
+
+  * mirror
+    - fix: when using module names, the check if source dirname (=module name) is
+    	   different to dest dirname fails (remote system name was not wiped out before
+	   testing)
+
+2022-04-11 17:24:43 1.0 ku22.04b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * lvusage
+    - fix: cosmetic (suppressed some warning issued by lvscan and parted, starting
+	   from 'ascii' release)
+    - fix: now searches devices infos also with 'dm' syntax (eg: /dev/lv/mypart -> ../dm-1)
+
+  * blocksync
+    - mod: changed ssh cipher from blowfish (deprecated) to aes192-cbc
+    - add: "-c cipher" option, to change the default ssh cipher
+    - add: "-n" and "-x" options, for dry-run (now the default); note that this breaks
+    	   compatibility with previous versions, the receiving blocksync script must
+	   accept the same options
+    - add: "-no-sudo" option, to disable remote use of 'sudo' command, that may be not
+    	   available; note that the remote user must have write access to target device
+
+2022-01-29 12:15:15 1.0 ku22.01b Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * imgsize
+    - del: is already in libimage-size-perl package (WTF ... I left a 'temp' copy in my
+    	   working bin directory since eons)
+
+2022-01-02 18:30:11 1.0 ku22.01a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * imgsize
+    - new: prints images size in several pupular formats
+
+2021-12-24 11:18:33 1.0 ku21.12a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * 7z-set-timestamp (new command)
+    - new: set 7z file timestamp from most recent file entry
+
+  * 7z-rmo
+    - add: final stats
+    - mod: fixed the mess of options evaluation
+    - mod: no more needs 'oldest' command to set output timestamp, now searches
+    	   the outfile itself (uses 7z-set-timestamp command)
+    - add: called with only one arg, the output file, will only update the timestamp
+
+  * oldest
+    - fix: called with only one filename will show nothing (processed as directory
+    	   instead of file)
+
+2021-11-20 12:33:10 1.0 ku21.11a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * lvusage
+    - add: more partitions infos (fs type, partition type)
+    - add: --debug option
+    - add: --tb option, to show sizes in Tb instead of Gb
+    - fix: mappped names containing a minus char are not converted correctly
+    	   (the '-' must become '--')
+
+2021-09-18 13:05:32 1.0 ku21.05 Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * production release ku21.05
+
+2021-05-17 16:51:45 1.0 ku21.4a Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
+
+  * meta: package owner
+    - mod: Allblue SA dismissed, now is KUBiC Labs only
+    - mod: from now releases uses the scheme YY.mm[patchlevel], where patchlevel
+    	   usually is a locase letter; releases YY.mm (w/out patchlevel) are
+	   production ones
+
+  * oldest
+    - fix: skip non-readable files instead of raising an "undefined" error
+
+2021-04-04 12:50:36 1.0 ku0.7 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * oldest
+    - fix: --terse option was ignored (instead was using --quiet/--verbose)
+    - fix: empty dirs produces spurious, wrong, results
+    - add: --debug option, with some debug messages too
+    - mod: new logic, you can now list files as arguments, they are grouped
+    	   like they belong to the same directory (=one result from the list)
+
+  * 7z-rmo
+    - mod: now accept a list of dir(s)/file(s) as input, instead of a single
+    	   directory name; minor output changes for dry run
+
+  * mirror, xlocate, ku-autosync
+    - mod: trap messages improved (now includes $0)
+
+2021-01-08 16:17:30 1.0 ku0.6 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * production version 1.0-ku0.6
+
+2021-01-07 16:02:24 1.0 ku0.5a Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * xlocate
+    - fix: missing "cp" in copy of usage file, line 1142
+    - fix: bare files passed as arguments where not scanned
+    - add: option --terse (-T) for search mode, to output only filenames
+
+  * xlocate-removedupes
+    - fix: undefined value on missing extra infos records
+
+  * fast_fingerprint
+    - fix: filename was printed even if --long option not used and only one
+    	   file in argument list
+
+2020-05-26 10:21:33 1.0 ku0.4 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * production version 1.0-ku0.4
+
+2020-05-26 10:08:46 1.0 ku0.3 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * xlocate-cleandupes
+    - new: external helper program to clean duplicate entries in xlocate db;
+    	   xlocate uses a small, inline awk program for this task, but can be
+	   very memory consuming, this external program, written in perl and
+	   using berkeley db to store temporary data, mitigate the problem;
+	   the drawback is that you need perl, and BerkeleyDB module, usually
+	   installed from libberkeleydb-perl package
+
+   * xlocate
+     - new: option --limit-ram-usage, --no-limit-ram-usage (default false),
+     	    config file option $F_LimitRamUsage;
+     	    instruct xlocate to use the external program xlocate-cleandupes
+	    instead of the internal awk program
+
+2020-05-22 13:32:53 1.0 ku0.2 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * production version 1.0-ku0.2
+
+2020-05-14 18:03:43 1.0 ku0.1 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * bin/ku-autosync
+    - fix: unreacheable systems will be processed anyway
+
+  * bin/xlocate
+    - add: --sort option (default: none); previus versions sorted the dbfile, just
+    	   before compression, if any; this is useless, just cosmetic, I prefer to
+	   have entries sorted, but this can be very resource consuming on large
+	   dbfiles; we can just sort xlocate output when searching, instead
+
+  * sbin/lvusage
+    - mod: improved, totals are computed by lv groups
+    - mod: improved, better in_use scan and display (looks for cryptsetup devices,
+    	   simple names vs /dev/mapper names, etc)
+
+  * sbin/cryptlist
+    - new: command that prints a table with the list of opened cryptsetup devices
+
+2020-04-09 14:08:41 1.0 ku0.0 Allblue SA, KUBiC Labs (CH) <packager@kubiclabs.com>
+
+  * new package
+
+  * from kubackup-server package
+    - new: ku-timestampdir, ku-storicize, ku-compressdir; also, renamed from
+    	   kubackup-* to ku-*, and improved
+
+  * from ku-base package
+    - new: 7z-rmo, ddtime, dug, fast_fingerprint, fdupe, ftpsync, ku-autosync,
+	   ku-dusage, ku-mediainfo, kupurge, kupurge-fast, mirror, non_blocking_dd,
+	   oldest, xlocate, xlocate-diskinfos,

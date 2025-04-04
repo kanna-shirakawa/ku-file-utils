@@ -1,0 +1,330 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+# 
+CMD=$(basename $0)
+CMDVER="1.10"
+CMDSTR="$CMD v$CMDVER (2024-12-27)"
+
+
+usage()
+{
+	echo "
+=== $CMDSTR == LVM2 usage summary ===
+
+usage: [options] $CMD
+
+options:
+  -D|--debug
+  -t|--tb	print size in Tb instead of Gb (Mb are always shown)
+" >&2
+	exit 127
+}
+
+cleanup()
+{
+	trap '' EXIT
+	if $DEBUG
+	then
+		echo "D# don't remove temp files in $TmpDir" >&2
+	else
+		rm -rf $TmpDir
+	fi
+	trap EXIT
+}
+
+
+
+csize()
+{
+	local out=$(echo -e "scale=2\n$*" | bc)
+	###echo ">> csize '$*' ==> '$out'" >&2
+	echo "$out"
+}
+
+# returns size in MiB if has_tib=false, in GiB if true
+# 2023-06-11 lc: recent lvscan sometimes prints sizes with "<" symbol in front (wtf?)
+psize()
+{
+	local line="$1"
+	local size=`echo "$line" | sed -e 's/.*\[ *//' -e 's/ .*//' -e 's/[<>]//g'`
+	local mega=1048576
+
+	case "$line" in
+	  *MB*|*MiB*)	csize "$size" ;;
+	  *GB*|*GiB*)	csize "$size*1024" ;;
+	  *TB*|*TiB*)	csize "$size*$mega" ;;
+	esac
+}
+
+printline()
+{
+	local fmt=
+	if $UseTera
+	then
+		fmt=" %-24s %10.2f Mb  %6.2f Tb  %s\n"
+		printf "$fmt" "$1" "$2" $(csize "$2/1048576") "${3:-}"
+	else
+		fmt=" %-24s %10.2f Mb  %8.2f Gb  %s\n"
+		printf "$fmt" "$1" "$2" $(csize "$2/1024") "${3:-}"
+	fi
+	return 0
+}
+
+
+#  /dev/md0              [     451.79 GiB] LVM physical volume
+#  0 LVM physical volume whole disks
+#  1 LVM physical volume
+#
+print_devices()
+{
+	local xx=
+	local size=
+	local units=
+	local dev=
+	local vg=
+	local prev_vg=
+	local grand_tot_space=0
+
+	echo -e "\nLVM groups / devices:\n"
+
+	# pvscan output line sample:
+	#  PV /dev/md1   VG lv    lvm2 [64.54 GiB / 2.68 GiB free]
+	exec 9<&0 <$tmp_pvscan
+	##while read line
+	while read xx dev xx vg xx size units xx
+	do
+		##dev=$(echo "$line" | sed -e 's/^  *//' -e 's/ .*//')
+		##size=$(psize "$line")
+		dev=$(printf "%-5s %s" "$vg" "$dev")
+		size=$(psize "$size $units")
+		tot_space[$vg]=$size
+		grand_tot_space=$(csize "$grand_tot_space+$size")
+		printline "$dev" $size
+	done
+	exec 0<&9 9<&-
+
+	printline "      TOTAL ALLOCATED" $grand_tot_space
+	echo
+}
+
+#  ACTIVE            '/dev/lv/self_swap' [512.00 MiB] inherit
+#  ACTIVE            '/dev/lv/self_w' [50.00 GiB] inherit
+#
+print_parts()
+{
+	local part=
+	local space1=
+	local space2=
+	local vg=
+	local prev_vg=
+	local free=
+
+	echo -e "\nLVM partitions:\n"
+
+	[ -s "$tmp_lvscan" ] || {
+		echo -e "  (no LVM partitions defined)\n"
+		return 0
+	}
+
+	exec 9<&0 <$tmp_lvscan
+	while read line
+	do
+		part=$(echo "$line" | sed -e "s#.*'/dev#/dev#" -e "s/'.*//")
+		size=$(psize "$line")
+		vg=$(echo "$part" | sed -e 's#/dev/##' -e 's#/.*##')
+
+		[ "$vg" != "$prev_vg" ] && {
+			[ "$prev_vg" != "" ] && {
+				printline "---- $prev_vg ALLOCATED" ${tot_used[$prev_vg]}
+				free=$(csize "${tot_space[$prev_vg]}-${tot_used[$prev_vg]}")
+				printline "     $prev_vg FREE" $free
+				echo
+			}
+			tot_used[$vg]=0
+			prev_vg=$vg
+		}
+
+		tot_used[$vg]=$(csize "${tot_used[$vg]}+$size")
+		printline "$part" $size "$(in_use_by $part)"
+	done
+	exec 0<&9 9<&-
+
+	printline "---- $vg ALLOCATED" ${tot_used[$vg]}
+	free=$(csize "${tot_space[$vg]}-${tot_used[$vg]}")
+	printline "     $vg FREE " $free
+	echo
+	return 0
+}
+
+
+in_use_by()
+{
+	local fs=$1
+	local virtfiles=$(ls /etc/libvirt/qemu/*.xml 2>/dev/null || :)
+	local realfs=
+	local mapped=
+	local dm=
+	local name=
+	local out=
+	local blkid=
+	local ptable=
+	
+	mapped=$(echo $fs | sed -e 's/-/--/g' -e 's#/dev/\([^/][^/]*\)/#/dev/mapper/\1-#')
+	dm=$mapped
+	[ -e $fs ] && { dm=$(ls -l $fs | sed -e 's#.*/##'); dm="/dev/$dm"; }
+
+	blkid=$(print_blkid "$fs")
+
+	[ "X$blkid" = "X" ] && blkid=$(print_blkid "$mapped")
+	[ "X$blkid" = "X" ] && blkid=$(print_blkid "$dm")
+	[ "X$blkid" = "X" ] && blkid=$(print_partition_table_type "$fs")
+	[ "X$blkid" = "X" ] && blkid=$(print_partition_table_type "$mapped")
+	[ "X$blkid" = "X" ] && blkid=$(print_partition_table_type "$dm")
+
+	case $blkid in
+	  crypto*)	blkid="crypto" ;;
+	esac
+
+	printf "%-10s" "$blkid"
+
+
+	out=$(swapon -s | grep "^$mapped " | sed -e 's/.*/IN USE/')
+	[ "$out" != "" ] && { echo "$out"; return 0; }
+
+	out=$(swapon -s | grep "^$dm " | sed -e 's/.*/IN USE/')
+	[ "$out" != "" ] && { echo "$out"; return 0; }
+
+	out=$(grep "^$fs " $tmp_crlist | sed -e 's/.* //')
+	[ "$out" != "" ] && { echo "crypt $out"; return 0; }
+
+	out=$(grep "^$mapped " $tmp_crlist | sed -e 's/.* //')
+	[ "$out" != "" ] && { echo "crypt $out"; return 0; }
+
+	[ "X$virtfiles" != "X" ] && {
+		out=$(grep -l "source .*='$fs'" $virtfiles | sed -e 's/\.xml//' -e 's#.*/##')
+		[ "$out" != "" ] && { echo "vm $out"; return 0; }
+
+		out=$(grep -l "source .*='$mapped'" $virtfiles | sed -e 's/\.xml//' -e 's#.*/##')
+		[ "$out" != "" ] && { echo "vm $out"; return 0; }
+	}
+
+	# in /proc/mounts can use the fs name itself, or the real
+	# dm-XX, or the /dev/mapper file
+	#
+	out=$(grep "^$fs " /proc/mounts)
+	[ "$out" != "" ] && { echo "MOUNTED"; return 0; }
+
+	out=$(grep "^$mapped " /proc/mounts)
+	[ "$out" != "" ] && { echo "MOUNTED"; return 0; }
+
+	##realfs=$(resolvelink "$fs")
+	##out=$(grep "^$realfs " /proc/mounts | sed -e 's/.*/(here)/')
+	##[ "$out" != "" ] && { echo "$out"; return 0; }
+
+	return 0
+}
+
+
+print_partition_table_type()
+{
+	local fs=$1
+	local out=
+
+	out=$(parted $fs print 2>/dev/null | grep -i 'partition table:' || :)
+	[ "X$out" != "X" ] && {
+		out=$(echo "$out" | sed -e 's/.*: //')
+		echo "[$out]"
+	}
+	return 0
+}
+
+print_blkid()
+{
+	local fs=$1
+	local out=
+
+	[ -e "$fs" ] || {
+		echo "INACTIVE"
+		return 0
+	}
+
+	out=$(grep "^$fs:.* TYPE=" $tmp_blkid)
+	[ "X$out" != "X" ] && echo "$out" | sed -e 's/.* TYPE="//' -e 's/".*//'
+	return 0
+}
+
+
+
+# (MAIN)
+
+DEBUG=false
+UseTera=false
+
+while [ $# != 0 ]
+do
+  case $1 in
+    -D|--debug)	DEBUG=true ;;
+    -t|--tb)	UseTera=true ;;
+    --)		break ;;
+    -*)		usage ;;
+    *)		usage ;;
+  esac
+  shift
+done
+
+[ "$(which lvmdiskscan)" = "" ] && {
+	echo "error: package 'lvm2' not installed?" >&2
+	exit 1
+}
+
+[ $(id -u) != 0 ] && {
+	echo "you must be root to use this program" >&2
+	exit 1
+}
+
+declare -A tot_space
+declare -A tot_used
+
+if $DEBUG
+then
+	TmpDir="/tmp/$CMD-DEBUG"
+	rm -rf $TmpDir
+	mkdir $TmpDir
+	pdebug() { echo "D# $*" >&2; }
+else
+	TmpDir=$(mktemp -d /tmp/$CMD-XXXXXXXX)
+	pdebug() { :; }
+fi
+tmp_pvscan="$TmpDir/pvscan"
+tmp_lvscan="$TmpDir/lvscan"
+tmp_crlist="$TmpDir/crlist"
+tmp_blkid="$TmpDir/blkid"
+
+trap 'cleanup' EXIT
+trap 'echo -e "\nunexpected error $? at $LINENO\n"' ERR
+trap 'echo "*INTR*"; cleanup; exit 255' 1 2 3
+set -e
+set -u
+
+pdebug "collect infos: pvscan"
+pvscan 2>/dev/null | grep ' PV ' >$tmp_pvscan || {
+	echo "no devices?"
+	exit 1
+}
+
+pdebug "collect infos: lvscan"
+lvscan 2>/dev/null | sort >$tmp_lvscan || :
+
+pdebug "collect infos: cryptlist"
+cryptlist --terse >$tmp_crlist
+
+pdebug "collect infos: blkid"
+blkid >$tmp_blkid
+
+print_devices
+print_parts
+
+
+exit 0

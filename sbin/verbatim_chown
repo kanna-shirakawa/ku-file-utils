@@ -1,0 +1,22 @@
+#!/usr/bin/perl -w
+
+my ($uid, $file)	= @ARGV;
+
+die( "only root can use this command\n") if (`id -u` != 0);
+die( "usage: $0 uid filename\n" )	if (@ARGV != 2);
+die( "file/dir not found: '$file'\n" )	if (! -e $file);
+
+if ($uid !~ /^[0-9]/) {	
+	$uid	= getpwnam( $uid )
+		or die( "user '$ARGV[0]' not exists\n" );
+}
+
+# records actual filemode
+
+my @st		= stat $file;
+my $mode	= $st[2] & 07777;
+my $gid		= $st[5];
+
+chown( $uid, $gid, $file )	or die "$!\n";
+chmod( $mode, $file )		or die "$|\n"; # restore original modes
+exit( 0 );

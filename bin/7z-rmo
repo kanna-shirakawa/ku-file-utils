@@ -1,0 +1,109 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.5"
+CMDSTR="$CMD v$CMDVER (2021-12-19)"
+
+set -e -u
+
+usage()
+{
+	echo "
+== $CMDSTR == invoke 7z emulating zip -rmo behaviour ==
+
+usage:	$CMD [options] 7z_outfile	# to set the timestamp only
+
+	$CMD [options] 7z_outfile dir(s)/file(s) ...
+
+options:
+  -n|--dry-run)		run in dummy mode
+
+* '7z' suffix will be automatically added to outpufile, if needed
+* no other 7z options are allowed on commandline
+* shortcut: $CMD 'name' (w/out .7z suffix)
+	'name.7z' will be the output file, bu if also a directory
+	name 'name' exists, will be processed as file argument;
+	ie:  $CMD name   is equivalent to   $CMD name.7z name
+" >&2
+	exit 1
+}
+
+# (MAIN)
+
+for cmd in "7z" "7z-set-timestamp"
+do
+	[ "$(which $cmd)" = "" ] && { echo "$CMD: required command '$cmd' not found, abort"; exit 1; }
+done
+
+out=
+f_exec=true
+dry_run_flag=""
+
+f_remove=true
+f_timestamp_only=false
+
+while [ $# != 0 ]
+do
+  case ${1:-} in
+    -n|--dry-run)	f_exec=false; dry_run_flag="-n" ;;
+    --nr|--no-remove)	f_remove=false ;;
+    --)			break ;;
+    -*)			usage ;;
+    *)			break ;;
+  esac
+  shift
+done
+
+[ $# = 0 ] && usage
+
+out=$(echo "$1" | sed -e 's#/*$##')
+case $out in
+ *.7z)	;;
+ *)	out="$out.7z" ;;
+esac
+
+case $# in
+  1)	# only one argument
+  	[ -d "$1" ] || {
+		f_timestamp_only=true
+	}
+	;;
+  *)	# first arg is output file, remaining ara file(s)/dir(s) to process
+  	shift
+	;;
+esac
+
+$f_timestamp_only || {
+	if $f_exec
+	then
+		7za u "$out" "$@"
+		echo -n " "; ls -l "$out"
+		echo -n " removing original dir(s)/file(s): $* ... "
+		rm -rf "$@"
+		echo "ok"
+	else
+		echo
+		echo " (dummy) 7za u '$out' $*"
+		echo " (dummy) will remove original dir(s)/file(s): $*"
+	fi
+}
+
+7z-set-timestamp $dry_run_flag "$out"
+
+totals=$(7z l "$out" | tail -1)
+size=$(echo "$totals" | awk '{ print $1; }')
+compressed=$(echo "$totals" | awk '{ print $2; }')
+files=$(echo "$totals" | awk '{ print $3; }')
+ratio=$(echo -e "scale=2\n($size-$compressed)/$size*100" | bc)
+
+echo
+printf "%12s files\n" "$files"
+printf "%12s total size\n" "$size"
+printf "%12s compressed size\n" "$compressed"
+printf "%12s compression ratio\n" "${ratio}%"
+echo
+
+exit 0

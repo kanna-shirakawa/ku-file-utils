@@ -1,0 +1,78 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.1"
+CMDSTR="$CMD v$CMDVER (2025-02-01)"
+
+set -e -u
+
+usage()
+{
+	echo "
+== get real name of dm device ==
+
+usage: $CMD dm-... or loop...
+" >&2
+	exit 127
+}
+
+
+
+get_dm_name()
+{
+	local dm=$1
+	local dmtable=
+	local out=
+	local major=
+
+	# get dm table ... only root can do it
+	dmtable=$(dmsetup ls) || return $?
+	major=$(echo "$dmtable" | head -1 | sed -e 's/.*(//' -e 's/:.*//')
+
+	# myfsA	(253:0) ---> myfsA dm-0
+	# myfsB	(253:0) ---> myfsB dm-1
+	#
+	dmtable=$(echo "$dmtable" | sed -e "s/\s*($major:/ dm-/" -e 's/)//')
+
+	dm=$(echo "$dm" | sed -e "s#/dev/##")
+	out=$(echo "$dmtable" | grep " $dm$" | cut -d' ' -f1)
+
+	[ "X$out" != "X" ] && echo "$out"
+	return 0
+}
+
+
+get_loop_name()
+{
+	local dm=$1
+	local looptable=
+	local out=
+
+	case $dm in
+		/dev/*)	;;
+		*)	dm="/dev/$dm"
+	esac
+
+	looptable=$(losetup -l) || return $?
+	looptable=$(echo "$looptable" | sed -e 's/  */ /g')
+
+	out=$(echo "$looptable" | grep "^$dm " | sed -e "s/[ \t]+/ /g" | cut -d' ' -f6)
+	[ "X$out" != "X" ] && echo "$out"
+	return 0
+}
+
+
+# (MAIN)
+
+[ $# != 1 ] && usage
+
+case ${1:-} in
+  dm-*)		get_dm_name "$1" ;;
+  loop*)	get_loop_name "$1" ;;
+  *)		usage ;;
+esac
+
+exit 0

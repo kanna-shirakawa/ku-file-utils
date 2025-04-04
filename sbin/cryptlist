@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+# 
+CMD=$(basename $0)
+CMDVER="1.0"
+CMDSTR="$CMD v$CMDVER (2020/05)"
+
+set -e -u
+
+
+usage()
+{
+	echo "
+=== $CMDSTR == cryptsetup devices listing ===
+
+usage: $CMD [--terse]
+" >&2
+	exit 127
+}
+
+cleanup()
+{
+	:
+}
+
+
+# (MAIN)
+
+f_terse=false
+
+[ "X${1:-}" = "X--terse" ] && { f_terse=true; shift; }
+[ $# != 0 ] && usage
+
+[ $(id -u) != 0 ] && {
+	echo "you must be root to use this program" >&2
+	exit 1
+}
+
+trap 'cleanup' EXIT
+trap 'echo -e "\nunexpected error $? at $LINENO\n"' ERR
+trap 'echo "*INTR*"; cleanup; exit 255' 1 2 3
+
+fmt="%-30s %-10s %s\n"
+
+$f_terse || echo
+$f_terse || printf "$fmt" "DEVICE" "TYPE" "MAPPED AS"
+
+for name in $(ls /dev/mapper)
+do
+	out=$(cryptsetup status $name 2>/dev/null) || continue
+	[ "$out" = "" ] && continue
+	dev=$(echo "$out" | grep 'device: ' | sed -e 's/.*device: *//')
+	typ=$(echo "$out" | grep 'type: ' | sed -e 's/.*type: *//')
+
+	printf "$fmt" "$dev" "$typ" "$name"
+done
+$f_terse || echo
+
+exit 0

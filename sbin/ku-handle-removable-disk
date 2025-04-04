@@ -1,0 +1,175 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=`basename $0`
+VERSION="1.3"
+VERSION_STRING="$VERSION (2015/05)"
+
+##exec >/dev/null 2>&1
+
+dev=/dev/$1
+ACTION_DESC=
+
+verboselog()
+{
+	local msg=$(/bin/echo -e "$@")
+	plog "$msg"
+	[ "`which notify-send`" != "" ] && {
+		export DISPLAY=${DISPLAY:=":0.0"}
+		notify-send \
+			--icon=New-USB-device --category="Device detection" \
+			"USB Disk $ACTION_DESC - $dev" "$msg"
+	}
+}
+
+plog()
+{
+	logger -s -t "$CMD" "$@"
+}
+
+
+exec_script()
+{
+	local dir="/etc/mon-usbdisks/$1.d"
+	local script=
+	local out=
+
+	for script in "$dir/$ID_FS_UUID_ENC" "$dir/$ID_FS_LABEL_ENC" "$dir/generic"
+	do
+		[ -f $script -a -x $script ] && {
+			plog "running script '$script'"
+			out=`$script 2>&1` || {
+				plog "error $? running $script: $out"
+			}
+			return 0
+		}
+	done
+}
+
+led_status()
+{
+	[ -x /bin/alix-led ] || return 0
+	/bin/alix-led $1
+}
+
+search_mountdir()
+{
+	local entry=
+	local tag=
+
+	# search /etc/fstab, try:
+	#  1. uuid
+	#  2. label
+	#
+	for tag in "UUID=$ID_FS_UUID_ENC" "LABEL=$ID_FS_LABEL_ENC" NONE
+	do
+		entry=`grep "^$tag[ ,	]" /etc/fstab | head -1`
+		[ "$entry" != "" ] && break
+	done
+	[ "$entry" == "" ] && return 1
+	set $entry
+	MON_USBDISKS_MOUNTDIR=$2
+	MON_USBDISKS_TAG=$tag
+	return 0
+}
+
+# (MAIN)
+
+export MON_USBDISKS_DEV="$dev"
+export MON_USBDISKS_MOUNTDIR=
+export MON_USBDISKS_TAG=
+export MON_USBDISKS_MOUNTED=false
+
+message="LABEL: $ID_FS_LABEL_ENC\nUUID: $ID_FS_UUID_ENC"
+
+plog "$ACTION $DEVNAME TYPE=$ID_TYPE BUS=$ID_BUS FS_TYPE=$ID_FS_TYPE LABEL=$ID_FS_LABEL_ENC UUID=$ID_FS_UUID_ENC"
+
+# silently ignore devices with neither LABEL or UUID
+#
+[ "$ID_FS_LABEL_ENC" == "" -a "$ID_FS_UUID_ENC" == "" ] && exit 0
+
+# silently ignore LUKS devices
+#
+[ "$ID_FS_TYPE" == "crypto_LUKS" ] && exit 0
+
+
+search_mountdir || {
+	verboselog "$message\n- ignored (not in /etc/fstab)"
+	exit 0	# nothing to do
+}
+mountdir=$MON_USBDISKS_MOUNTDIR
+tag=$MON_USBDISKS_TAG
+
+led_status hdd-check
+
+case $ACTION in
+  add)
+  	ACTION_DESC="connected"
+
+	# check if the disk is in place, or if it's a stale mount
+	#
+	mountpoint $mountdir && {
+		ls $mountdir/ 2>/dev/null >/dev/null || {
+			plog "stale mount detected on $mountdir, umount ..."
+			umount $mountdir
+			sleep 1
+			mountpoint $mountdir && {
+				plog "umount failed, retry ..."
+				umount -f -l $mountdir
+			}
+		}
+
+	}
+
+	# re-check if there is already a disk mounted
+	#
+	mountpoint $mountdir && {
+		verboselog "$message\n- ignored (dir '$mountdir' already in use)"
+		exit 0	# already mounted on this dir
+	}
+
+	exec_script "pre-add"
+
+  	if out=`mount "$tag" 2>&1`
+	then
+		verboselog "$message\n- mounted as $mountdir ($tag)"
+		MON_USBDISKS_MOUNTED=true
+		led_status hdd-mounted
+	else
+		verboselog "$message\n- can't mount on $mountdir ($tag): $out"
+	fi
+
+	exec_script "add"
+	;;
+
+  remove)
+  	ACTION_DESC="removed"
+
+	exec_script "pre-remove"
+
+  	if out=`umount $dev 2>&1`
+	then
+		verboselog "$message\n- unmounted"
+		led_status hdd-umounted
+		MON_USBDISKS_MOUNTED=false
+	else
+		if echo "$out" | egrep -q 'not mounted|not found'
+		then
+			led_status hdd-umounted
+			verboselog "$message\n- already umounted (no action)"
+			MON_USBDISKS_MOUNTED=false
+		else
+			verboselog "$message\n- can't umount: $out"
+			MON_USBDISKS_MOUNTED=true
+		fi
+	fi
+	exec_script "remove"
+	;;
+
+  *)	plog "error: unknown \$ACTION '$ACTION'"
+  	;;
+esac
+
+exit 0

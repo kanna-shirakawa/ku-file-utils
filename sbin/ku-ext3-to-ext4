@@ -1,0 +1,141 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=`basename $0`
+
+usage()
+{
+	echo "
+usage: $CMD [-x] [--file] dev(s)
+
+* use -x to execute (warning, it may take LOOONG time!),
+  default is to dry-run, only show wath will be done
+
+* use --file to work on files instead of block devices
+" >&2
+	exit 1
+}
+
+cleanup()
+{
+	umount "$mpoint" 2>/dev/null
+	[ -d "mpoint" ] && rmdir "$mpoint"
+	rm -f "$tmpfile"
+}
+
+
+
+# (MAIN)
+
+f_exec=false
+f_file=false
+
+while [ $# != 0 ]
+do
+  case $1 in
+    -x)		f_exec=true ;;
+    --file)	f_file=true ;;
+    -*|"")	usage ;;
+    *)		break ;;
+  esac
+  shift
+done
+[ $# == 0 ] && usage
+
+# sanity checks
+#
+errors="false"
+tmpfile=`mktemp /tmp/$CMD-XXXXXX.tmp` || exit $?
+
+trap "echo '*INTR*'; cleanup; exit 255" 1 2 3
+
+echo "* checking ..."
+
+for dev
+do
+	$f_file || {
+		[ -b "$dev" ] || {
+			echo "  '$dev' is not a block device" >&2
+			errors="true"
+			continue
+		}
+	}
+	tune2fs -l "$dev" >$tmpfile 2>&1 || {
+		cat "$tmpfile"
+		echo
+		echo "  '$dev' is not an ext3 filesystem" >&2
+		errors='true'
+		continue
+	}
+	tune2fs -l "$dev" | grep -q 'has_journal' || {
+		echo "  '$dev' is an ext2 filesystem, not ext3" >&2
+		errors='true'
+		continue
+	}
+	tune2fs -l "$dev" | grep -q 'extent' && {
+		echo "  '$dev' is already an ext4 filesystem" >&2
+		errors='true'
+		continue
+	}
+done
+$errors && {
+	echo "* some checks failed, exiting"
+	cleanup
+	exit 1
+}
+
+
+
+# go!
+
+mpoint="/mnt/$CMD.tmp"
+[ -d "$mpoint" ] || mkdir "$mpoint"
+
+for dev
+do
+	echo "* enable ext4 features on $dev"
+	echo "  tune2fs -O extents,uninit_bg,dir_index '$dev'"
+	$f_exec && {
+		tune2fs -O extents,uninit_bg,dir_index "$dev" || {
+			cleanup
+			exit 1
+		}
+	}
+
+	echo "* performing fsck ..."
+	echo "  fsck -v -p -f '$dev'"
+	$f_exec && {
+		fsck -v -p -f "$dev" || {
+			cleanup
+			exit 1
+		}
+	}
+
+	echo "* try to mount filesystem on '$mpoint' ..."
+	echo "  mount '$dev' '$mpoint'"
+	$f_exec && {
+		mount "$dev" "$mpoint" || {
+			cleanup
+			exit 1
+		}
+	}
+
+	echo "* converting files ..."
+	echo "  chattr -R +e $mpoint/."
+	$f_exec && {
+		chattr -R +e $mpoint/. || {
+			cleanup
+			exit 1
+		}
+		umount "$mpoint" || {
+			cleanup
+			exit 1
+		}
+	}
+	echo "* done '$dev'"
+done
+
+cleanup
+exit 0

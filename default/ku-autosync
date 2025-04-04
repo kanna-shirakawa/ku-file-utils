@@ -1,0 +1,13 @@
+# /etc/default/ku-autosync
+#
+# __copy1__
+# __copy2__
+#
+# set default environment for ku-autosync command
+# (none at the moment)
+#
+
+
+# append your custom env here
+# example
+# HOST=myremote.system.com

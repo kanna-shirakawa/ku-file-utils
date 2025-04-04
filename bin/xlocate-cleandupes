@@ -1,0 +1,219 @@
+#!/usr/bin/perl -w
+#
+my $CMD		= "xlocate-cleandupes";
+my $CMDVER	= "1.2";
+my $CMDSTR	= "$CMD v$CMDVER (2020/07)";
+
+use BerkeleyDB;
+
+my $Debug	= 0;
+my $Verbose	= 1;
+my $Progress	= 0;
+my $OLD;
+my $NEW;
+my $Tag;
+my $DB;
+my $TmpDir	= "/tmp";
+my $TmpDbFile;
+
+
+ARGS: while (scalar(@ARGV)) {
+    my $arg = $ARGV[0];
+    CASE: {
+	if ($arg eq "-D" || $arg eq "--debug") {
+		$Debug	= 1;
+		last CASE;
+	}
+	if ($arg eq "-v" || $arg eq "--verbose") {
+		$Verbose = 1;
+		$Progress = 1;
+		last CASE;
+	}
+	if ($arg eq "-q" || $arg eq "--quiet") {
+		$Verbose = 0;
+		$Progress = 0;
+		last CASE;
+	}
+	if ($arg eq "--tmpdir") {
+		shift(@ARGV);
+		usage( "--tmpdir needs an argument" )		if (!scalar(@ARGV));
+		usage( "'%s' is not a directory", $ARGV[0] )	if (! -d $ARGV[0]);
+		$TmpDir	= $ARGV[0];
+		last CASE;
+	}
+	last ARGS					if ($arg eq '--');
+	usage( "unknown option: '%s'", $arg )		if ($arg =~ /^-/);
+	last ARGS;
+    }
+    shift( @ARGV );
+}
+
+usage( "missing arguments" )		if (scalar(@ARGV) != 3);
+
+$Tag	= shift(@ARGV);
+$OLD	= shift(@ARGV);
+$NEW	= shift(@ARGV);
+
+if ($Debug) {
+	$TmpDbFile	= "$TmpDir/$CMD-db.tmp";
+	pdebug( "temp file: %s\n", $TmpDbFile );
+} else {
+	$TmpDbFile	= `mktemp "$TmpDir/$CMD-XXXXXX"`; chomp( $TmpDbFile );
+}
+
+$SIG{INT} = \&sig_int;
+
+unlink( $TmpDbFile );
+$DB = new BerkeleyDB::Hash( -Filename => $TmpDbFile, -Flags => DB_CREATE )
+	or die( "$CMD: error creating '$TmpDbFile': $! $BerkeleyDB::Error\n" );
+
+
+my @tmp;
+my $key;
+my $val;
+my $status;
+my $cursor;
+my $cnt;
+
+# load old records
+#
+open( OLD, "<$OLD" )	or die( "$CMD: can't open '$OLD': $!\n" );
+$cnt = 0;
+while (<OLD>) {
+	chomp();
+	$cnt ++;
+	printf( STDERR "   %s: loading old records from %s: %d\r", $CMD, $OLD, $cnt )
+		if ($Progress && !($cnt % 10000));
+	@tmp	= split( '\|' );
+	if ($Tag ne '' && $tmp[0] ne $Tag) {	# pass other tags as-is
+		print( $_, "\n" );
+		##pdebug( "passing as-is: %s\n", $_ );
+		next;
+	}
+	$key	= $tmp[1] . '|' . $tmp[2];		# filetype + filename
+	if (defined $tmp[3]) {
+		$val	= $tmp[3] . '|' . $tmp[4];	# extra infos
+	} else {
+		$val	= "|";				# empty extra infos (dir or old format entry)
+	}
+	$status	= $DB->db_put( $key, $val )
+		and die( "$CMD: error storing '$key': $status\n" );
+
+	##pdebug( "old, storing key='%s': %s\n", $key, $val );
+}
+close( OLD )	or die( "$CMD: error reading '$OLD': $!\n" );
+pverbose( "   %s: %9d old records loaded from %s                 \n", $CMD, $cnt, $OLD );
+
+
+# load new records and compare with old ones
+#
+open( NEW, "<$NEW" )	or die( "$CMD: can't open '$NEW': $!\n" );
+$cnt = 0;
+$dupes = 0;
+while (<NEW>) {
+	$cnt ++;
+	@tmp	= split( '\|' );
+	$key	= $tmp[1] . '|' . $tmp[2];	# filetype + filename
+
+	$status = $DB->db_del( $key );	# removes dupe record from hash, if any
+	$dupes ++	if (!$status);
+	##pdebug( "deleted dupe: %s\n", $key )	if (!$status);
+	print( $_ );
+	printf( STDERR "   %s: loading new records from %s: %d, %d dupes\r",
+		$CMD, $NEW, $cnt, $dupes )	if ($Progress && !($cnt % 10000));
+}
+close( NEW )	or die( "$CMD: error reading '$NEW': $!\n" );
+pverbose( "   %s: %9d new records (%d dupes) loaded from %s                  \n", $CMD, $cnt, $dupes, $NEW );
+
+
+# finally, flushes remaning old records
+#
+$cursor = $DB->db_cursor();
+$cnt = 0;
+if (defined $cursor) {
+	while ($cursor->c_get($key, $val, DB_NEXT) == 0) {
+		$cnt++;
+		print( $Tag, "|", $key, "|", $val, "\n" );
+		printf( STDERR "   %s: flushing non-dupe records: %d\r", $CMD, $cnt )
+			if ($Progress && !($cnt % 10000));
+		##pdebug( "flush %s: %s\n", $key, $val );
+	}
+}
+pverbose( "   %s: %9d non-dupe records flushed                        \n", $CMD, $cnt );
+
+cleanup();
+exit( 0 );
+
+
+
+
+sub usage
+{
+	printf( STDERR "
+== $CMD = cleans duplicate records in xlocate temp files =
+
+  must work on files in uncompressed xlocate format, full records
+  with tags, filename, filesize, etc
+
+  compares the content of two files, one containing the old records and
+  one the updates records, selecting only the records that tagged with
+  the specified 'tag', removing duplicates
+
+  the other records (with different tags) are copied as-is
+
+  uses a berkeley db temp file to reduce the RAM usage
+
+
+usage: [options] $CMD tag original_file new_file [tempdir]
+
+options:
+  -v|--verbose	be verbose (default: no progress, only totals)
+  -q|--quiet	be quiet, no messages at all
+  -D|--debug	prints debug messages on stderr; temp db file will
+  		not be removed on exit
+  --tmpdir dir	set temp directory (default: $TmpDir)
+" );
+	if (scalar(@_)) {
+		printf( STDERR "\n%s usage error: ", $CMD );
+		if (scalar(@_) > 1) {
+			my $fmt = shift(@_);
+			printf( STDERR $fmt, @_ );
+		} else {
+			print( STDERR @_ );
+		}
+		print( STDERR "\n\n" );
+	}
+	die( "\n" );
+}
+
+sub cleanup
+{
+	$DB = undef;
+	unlink( $TmpDbFile )	if (!$Debug);
+	1;
+}
+
+sub sig_int
+{
+	print( STDERR "\n$CMD: *INTR*\n" );
+	cleanup();
+	exit(1);
+}
+
+
+sub pdebug
+{
+	return 1	if (!$Debug);
+	my $fmt	= shift;
+	printf( STDERR "D# " )	if ($fmt =~ /\n$/);
+	printf( STDERR $fmt, @_ );
+	1;
+}
+
+sub pverbose
+{
+	return 1	if (!$Verbose);
+	my $fmt	= shift;
+	printf( STDERR $fmt, @_ );
+	1;
+}

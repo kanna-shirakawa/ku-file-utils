@@ -1,0 +1,217 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.1"
+CMDSTR="$CMD v$CMDVER (2018/11)"
+
+##exec >>/tmp/$CMD 2>&1
+##echo "----------------------------------------------------------------"
+##echo "PID: $$"
+##env | sort
+##set -x
+
+dev=/dev/${1:-$DEVNAME}
+ACTION_DESC=
+
+verboselog()
+{
+	local msg=$(/bin/echo -e "$@")
+	plog "$msg"
+	[ "$(which notify-send)" != "" ] && {
+		export DISPLAY=${DISPLAY:=":0.0"}
+		notify-send \
+			--icon=New-USB-device --category="Device detection" \
+			"USB-LUKS Disk $ACTION_DESC - $dev" "$msg"
+	}
+}
+
+plog()
+{
+	logger -s -t "$CMD" "$@"
+}
+
+
+exec_script()
+{
+	local dir="/etc/mon-usbdisks/$1.d"
+	local script=
+	local out=
+
+	for script in "$dir/$ID_FS_UUID_ENC" "$dir/$ID_FS_LABEL_ENC" "$dir/generic"
+	do
+		[ -f $script -a -x $script ] && {
+			plog "running script '$script'"
+			out=$($script 2>&1) || {
+				plog "error $? running $script: $out"
+			}
+			return 0
+		}
+	done
+}
+
+led_status()
+{
+	[ -x /bin/alix-led ] || return 0
+	/bin/alix-led $1
+}
+
+search_mountdir()
+{
+	local entry=
+	entry=$(grep "$LUKS_DM[ ,	]" /etc/fstab | head -1)
+	[ "$entry" == "" ] && return 1
+	set $entry
+	MON_USBDISKS_MOUNTDIR=$2
+	MON_USBDISKS_TAG=$LUKS_DM
+	return 0
+}
+
+
+
+search_luks_device()
+{
+	[ -f /etc/crypttab ] || {
+		return 1
+	}
+	# serch for uuid
+	#
+	cat /etc/crypttab | while read name uuid key luks
+	do
+		[ "$uuid" = "/dev/disk/by-uuid/$ID_FS_UUID_ENC" ] && {
+			[ "$key" != "" ] && {
+				echo $name $key
+				return 0
+			}
+			plog "ignored $ID_FS_UUID_ENC found in /etc/crypttab, but not keyfile provided"
+			return 1
+		}
+	done && return 0
+
+	plog "ignored $ID_FS_UUID_ENC not found in /etc/crypttab"
+	return 1
+}
+
+# (MAIN)
+
+plog "$ACTION $DEVNAME TYPE=$ID_TYPE BUS=$ID_BUS FS_TYPE=$ID_FS_TYPE LABEL=$ID_FS_LABEL_ENC UUID=$ID_FS_UUID_ENC"
+
+# silently ignore devices with neither LABEL or UUID
+#
+[ "$ID_FS_LABEL_ENC" == "" -a "$ID_FS_UUID_ENC" == "" ] && exit 0
+
+# silently ignore non LUKS devices
+#
+[ "$ID_FS_TYPE" != "crypto_LUKS" ] && exit 0
+
+
+export MON_USBDISKS_DEV="$dev"
+export MON_USBDISKS_MOUNTDIR=
+export MON_USBDISKS_TAG=
+export MON_USBDISKS_MOUNTED=false
+
+
+set $(search_luks_device) NONE || exit 0	# ignored
+
+
+export LUKS_NAME=$1
+export LUKS_KEY=$2
+export LUKS_DM=/dev/mapper/$LUKS_NAME
+
+message="LUKS: $LUKS_NAME\nUUID: $ID_FS_UUID_ENC"
+
+search_mountdir || {
+	verboselog "$message\n- ignored (not in /etc/fstab)"
+	exit 0	# nothing to do
+}
+mountdir=$MON_USBDISKS_MOUNTDIR
+tag=$MON_USBDISKS_TAG
+
+led_status hdd-check
+
+
+case $ACTION in
+  add)
+	out=$(cryptsetup --key-file=$LUKS_KEY luksOpen $dev $LUKS_NAME 2>&1 </dev/null) || {
+		plog "error opening LUKS device '$LUKS_NAME': $out"
+		exit 1
+	}
+	message="$message\n- opened crypted LUKS device '$LUKS_NAME'"
+
+  	ACTION_DESC="connected"
+
+	# check if the disk is in place, or if it's a stale mount
+	#
+	mountpoint $mountdir && {
+		ls $mountdir/ 2>/dev/null >/dev/null || {
+			plog "stale mount detected on $mountdir, umount ..."
+			umount $mountdir
+			sleep 1
+			mountpoint $mountdir && {
+				plog "umount failed, retry ..."
+				umount -f -l $mountdir
+			}
+		}
+
+	}
+
+	# re-check if there is already a disk mounted
+	#
+	mountpoint $mountdir && {
+		verboselog "$message\n- mount ignored (dir '$mountdir' already in use)"
+		exit 0	# already mounted on this dir
+	}
+
+	exec_script "pre-add"
+
+  	if out=$(mount $LUKS_DM 2>&1)
+	then
+		verboselog "$message\n- mounted as $mountdir ($tag)"
+		MON_USBDISKS_MOUNTED=true
+		led_status hdd-mounted
+	else
+		verboselog "$message\n- can't mount on $mountdir ($tag): $out"
+	fi
+
+	exec_script "add"
+	;;
+
+  remove)
+  	ACTION_DESC="removed"
+
+	exec_script "pre-remove"
+
+	if grep "^/dev/mapper/$LUKS_NAME " /proc/mounts
+	then
+  		if out=$(umount /dev/mapper/$LUKS_NAME 2>&1)
+		then
+			message="$message\n- unmounted"
+			led_status hdd-umounted
+			MON_USBDISKS_MOUNTED=false
+		else
+			message="$message\n- can't umount: $out"
+			MON_USBDISKS_MOUNTED=true
+		fi
+	else
+		led_status hdd-umounted
+		message="$message\n- already umounted (no action)"
+		MON_USBDISKS_MOUNTED=false
+	fi
+
+	exec_script "remove"
+
+	out=$(cryptsetup luksClose $LUKS_NAME 2>&1 </dev/null) || {
+		verboselog "$message\n- ERROR closing LUKS device: $out"
+		exit 1
+	}
+	verboselog "$message\n- closed crypted LUKS device"
+	;;
+
+  *)	plog "error: unknown \$ACTION '$ACTION'"
+  	;;
+esac
+
+
+exit 0

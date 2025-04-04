@@ -1,0 +1,10 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.0"
+CMDSTR="$CMD v$CMDVER (2022-04-11)"
+
+exec mkfs.ext4 -E lazy_itable_init=0 "$@"

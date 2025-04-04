@@ -1,0 +1,570 @@
+#!/usr/bin/perl -w
+#
+# __copy1__
+# __copy2__
+#
+use strict qw(vars);
+
+use Digest::MD5;
+
+my $CMD		= "fdupe";
+my $CMDVER	= "1.4";
+my $CMDSTR	= "$CMD v$CMDVER (2023-03-21)";
+
+my $CacheFname	= "cache_$CMD";
+
+my %SUMS;
+my %FILE;
+my $Scanned	= 0;
+my $Dupes	= 0;
+
+my $DH	= "dir";
+
+my @Command;;
+my @Dirs;
+my $F_same_dir	= 1;
+my $F_diff_dir	= 1;
+my $F_verbose	= 1;
+my $F_progress	= 1;
+my $F_samename	= 0;
+my $F_savecache	= 0;
+my $F_unlink	= 0;
+my $MaxRescan	= 10;
+my $Basedir	= "";
+my $Now		= time();
+my @Exclude	= ();
+my $Debug	= 0;
+
+while (@ARGV) {
+    $_	= shift(@ARGV);
+    CASE: {
+    	if ($_ eq "-x") {		# take the rest as command
+		@Command	= @ARGV;
+		@ARGV		= ();
+		last CASE;
+	}
+	if ($_ eq "-n" || $_ eq "--dry-run") {
+		@Command	= qw(NOP);
+		last CASE;
+	}
+	if ($_ eq "-D" || $_ eq "--debug") {
+		$Debug		= 1;
+		last CASE;
+	}
+	if ($_ eq "-s" || $_ eq "--samedir")	{ $F_diff_dir = 0; last CASE; }
+	if ($_ eq "-d" || $_ eq "--nosamedir")	{ $F_same_dir = 0; last CASE; }
+	if ($_ eq "-N" || $_ eq "--samename")	{ $F_samename = 1; last CASE; }
+	if ($_ eq "-q" || $_ eq "--verbose")	{ $F_verbose = 0; $F_progress = 0; last CASE; }
+	if ($_ eq "-p" || $_ eq "--progress")	{ $F_verbose = 0; $F_progress = 1; last CASE; }
+	if ($_ eq "-c" || $_ eq "--savecache")	{ $F_savecache = 1; last CASE; }
+	if ($_ eq "--delete") {
+		$F_unlink	= 1;
+		last CASE;
+	}
+	if ($_ eq "-b") {
+		usage()		if (!@ARGV);
+		$Basedir	= shift(@ARGV);
+		last CASE;
+	}
+	if ($_ eq "-X" || $_ eq "--exclude") {
+		usage()		if (!@ARGV);
+		push( @Exclude, shift(@ARGV) );
+		last CASE;
+	}
+	usage()	if ($_ =~ /^-/);
+	push( @Dirs, $_ );
+    }
+}
+
+usage()	if (!@Dirs);
+
+select( STDERR ); $| = 1;
+select( STDOUT ); $| = 1;
+
+my @templist	= @Dirs;
+
+while (@templist) {
+	if (load_sums( shift(@templist) ) == 0) {
+		$MaxRescan --;
+		if ($MaxRescan) {
+			verbose( "\n(RESCANNING)\n" );
+			@templist	= @Dirs;
+			%SUMS		= ();
+			%FILE		= ();
+			$Scanned	= 0;
+			$Dupes		= 0;
+		} else {
+			die( "error: maximum rescan times reached, stopped.\n" );
+		}
+	}
+}
+
+verbose();
+exit( 0 );
+
+
+
+sub load_sums {
+	my $dir	= shift;
+	my @dirs;
+	my @files;
+	my $md5;
+	my $file;
+	my $sumtime	= 0;
+	my $filetime	= 0;
+	my @stats;
+	my $tag		= "+";
+
+	opendir( $DH, $dir )	or do {
+		verbose();
+		print( STDERR "warning: can't open directory $dir: $!\n" );
+		return 1;
+	};
+
+	if ($dir eq ".") {
+		$dir	= "";
+	} else {
+		$dir	= "$dir/";
+	}
+
+	LOOP: while ($file = readdir( $DH ) ) {
+		pdebug( "scanning '%s'\n", $file );
+		next	if ($file =~ /^\./);
+
+		foreach my $match (@Exclude) {
+			next LOOP	if ("$dir$file" =~ /$match/);
+		}
+
+		next	if (-l "$dir$file");		# ignore symlinks
+
+		pdebug( "selected '%s'\n", $file );
+
+		if (-d _) {
+			push( @dirs, "$dir$file" );
+		} else {
+			next	if (! -s "$dir$file");	# ignore empty files
+			push( @files, $file );
+			@stats		= stat( "$dir$file" );
+			$filetime	= $stats[9] if ($stats[9] > $filetime);
+		}
+	}
+	closedir( $DH );
+
+	@stats	= stat( "$dir.$CacheFname" );
+
+	# this timestamp is when the method of computing fingerprint was changed
+	#
+	if (-s "$dir.$CacheFname") {
+		my $inv_timestamp	= fast_file_fingerprint( '--timestamp' );
+		if ($stats[9] < $inv_timestamp) {
+			pdebug( "\n invalidating %s.$CacheFname: %d < %d\n", $dir, $stats[9], $inv_timestamp );
+			$stats[9] = 0;
+		}
+	}
+
+	my $loaded = 0;
+
+	if (-s "$dir.$CacheFname" && $stats[9] >= $filetime) {
+		$tag	= " ";
+		my $SUM;
+		open( SUM, "<$dir.$CacheFname" ) and do {
+			while( $_ = <SUM> ) {
+				chomp();
+				$md5	= $_;
+				$file	= $_;
+				$md5	=~ s/ .*//;
+				$file	=~ s/^$md5 //;
+
+				$SUMS{"$dir$file"}	= $md5	if ($md5 && $file);
+
+				stats_report( "$dir$file", "^" );
+				$loaded ++;
+			}
+			close( SUM );
+		};
+	}
+
+	my $do_write = 0;
+	if ($F_savecache) {
+		open( SUM, ">$dir.$CacheFname" ) and $do_write = 1;
+	}
+
+	my $bufsize	= 4 * 1024 * 1024;
+	my $sizelimit	= 3.1 * $bufsize;
+
+	for $file (@files) {
+
+		$Scanned ++;
+
+		if (!defined $SUMS{"$dir$file"}) {
+			stats_report( "$dir$file", "+" );
+			$md5			= fast_file_fingerprint( "$dir$file" );
+			$SUMS{"$dir$file"}	= $md5;
+		} else {
+			stats_report( "$dir$file", "=" );
+			$md5	= $SUMS{"$dir$file"};
+		}
+		print( SUM "$md5 $file\n" )	if ($do_write);
+
+		if (defined $FILE{$md5}) {
+
+			my $ddir	= $dir;
+			   $ddir	=~ s/.$//;
+			my $ofile	= $FILE{$md5};
+			   $ofile	=~ s/.*\///;
+			my $odir	= $FILE{$md5};
+
+			if ($odir =~ /\//) {
+	   			$odir	=~ s#/[^/]+$##;
+			} else {
+				$odir	= "";
+			}
+
+			my $doit = 1;
+
+			$doit = 0	if ($ofile ne $file && $F_samename);
+			$doit = 0	if ($odir eq $ddir && !$F_same_dir);
+			$doit = 0	if ($odir ne $ddir && !$F_diff_dir);
+			$doit = 0	if ($Basedir && $odir !~ m#^$Basedir# && $ddir !~ m#^$Basedir#);
+			$doit = 0	if ($Basedir && $odir =~ m#^$Basedir# && $ddir =~ m#^$Basedir#);
+
+			if ($doit) {
+				$Dupes ++;
+				verbose( "$FILE{$md5} = $dir$file\n" );
+
+				my $status = execute_command( $FILE{$md5}, "$dir$file", ($odir ? $odir : "."), $ddir );
+
+				if ($status == 0) {
+					close( SUM )	if ($do_write);
+					return 0;	# RESCAN
+				}
+				return	1	if ($status < 0);	#skip
+
+			}
+		} else {
+			$FILE{$md5}	= "$dir$file";
+		}
+	}
+	close( SUM )	if ($do_write);
+
+	for $dir (@dirs) {
+		return 0	if (load_sums( $dir ) == 0);	 # rescan?
+	}
+	return 1;
+}
+
+
+
+sub usage
+{
+	die( "
+== $CMDSTR == search and perform actions on duplicate files ==
+
+usage: $CMD [options] dir(s) [-x command ...]
+
+options:
+ -q|--quiet	be quiet
+ -n|--dry-run	does nothing (alias --dry-run, same of using -x NOP)
+ -p|--progress	be quiet but show progress
+ -D|--debug	activate debug
+
+ -s|--samedir	only dupes in the same dir
+ -d|--nosamedir	only dupes in different dirs (default: all dupes)
+ -N|--samename	only file with same name
+ -c|--savecache	saves md5 fingerprints in '.$CacheFname' files (for
+ 		each dir
+
+ -b dir		compare only against 'dir' (that must be in dirlist)
+   --basedir ...
+ -X str		exclude string 'str' from filelist
+  --exclude ...
+
+
+- command will be executed for each dupefile found
+- you can use macros in your commandline
+
+MACRO EXPANSION
+
+  %o	original file (dirlist is important here)
+  %d	duplicate file
+  %O	directory of original file
+  %D	directory of duplicate file
+
+INTERNAL COMMANDS (used instead of system commands)
+
+  QUIT			exit with errcode 0
+  DIE			exit with errcode 1
+  RESCAN		restart scanning
+  SKIPDIR		skip remaining files in directory
+  PRINT string		prints string (w/parms, on stdout)
+  PRINTF fmt args	prints using printf(), first arg must be the
+  			formatting string; you can use %o, %d, etc ...
+  DELDUPE		deletes the duplicates (same of -x rm %o, but does
+			not spawn a subshell, uses internal unlink function)
+  NOP			does nothing (same of -n flag)
+
+default action is print 'original_file dupe_file' (as PRINT %o %d, or
+  PRINTF '%s %s\\n' %o %d)
+" );
+}
+
+
+sub execute_command
+{
+	my ($orig, $dupe, $odir, $ddir )	= @_;
+
+	if (!@Command) {
+		print( "$orig $dupe\n" );
+		return 1;
+	}
+
+	my @command	 = @Command;
+	my @syscommand;
+	my @intcommand;
+	my @intparms;
+
+	for $_ (@command) {
+		$_ =~ s/%o/$orig/g;
+		$_ =~ s/%d/$dupe/g;
+		$_ =~ s/%O/$odir/g;
+		$_ =~ s/%D/$ddir/g;
+		$_ =~ s/\\n/\n/g;
+		$_ =~ s/\\t/\t/g;
+
+
+		if ($_ =~ /^NOP$|^PRINT$|^PRINTF|^QUIT$|^DIE$|^RESCAN$|^SKIPDIR|^DELDUPE$/) {
+			if (@intcommand) {
+				die( "error: you can use only one internal command\n" );
+			}
+			push( @intcommand, $_ );
+			next;
+		}
+		if (@intcommand) {
+			push( @intcommand, $_ );
+		} else {
+			push( @syscommand, $_ );
+		}
+	}
+
+	if (@syscommand) {
+		pdebug( "\n  executing %s\n", join( " ", @syscommand ) );
+		system( @syscommand );
+	}
+
+	return	1 if (!@intcommand);
+
+	pdebug( "  executing internal %s\n", join( " ", @intcommand ) );
+
+	$_ = shift(@intcommand);
+
+
+	if ($_ eq "PRINT") {
+		print( join( " ", @intcommand ), "\n" );
+		return 1;	# ok
+	}
+	if ($_ eq "PRINTF") {
+		$_ = shift(@intcommand);
+		#printf( $_, @intcommand );
+		#printf( @intcommand );
+		$_ = sprintf( $_, @intcommand );
+		print( $_ );
+		return 1;	# ok
+	}
+	if ($_ eq "DELDUPE") {
+		unlink( $dupe );
+		return 1;	# ok
+	}
+	return 1	if ($_ eq "NOP");	# ok
+	return -1	if ($_ eq "SKIPDIR");
+	return 0	if ($_ eq "RESCAN");	# 0=restart
+	exit( 0 )	if ($_ eq "QUIT");
+	exit( 1 )	if ($_ eq "DIE");
+}
+
+
+sub verbose
+{
+	print( STDERR "\r\033[K", @_ )		if ($F_verbose);
+	1;
+}
+
+sub pdebug
+{
+	print( STDERR "D# " )	if ($Debug);
+	printf( STDERR @_ )	if ($Debug);
+	1;
+}
+
+
+sub stats_report
+{
+	my ($file, $tag)	= @_;
+	print( STDERR "\r\033[K", " $Dupes/$Scanned $tag " . string_compact( $file, -12 ) )
+		if ($F_progress);
+}
+
+
+sub string_compact
+{
+	my ($str, $len)	= @_;
+	my $curlen	= length($str);
+
+	if ($len < 0) {
+		if ($ENV{COLUMNS}) {
+			$len	= $ENV{COLUMNS} + $len;
+		} else {
+			$len	= 80 + $len;
+		}
+	}
+
+	$str		=~ s/[\177-\377]/?/g;
+	$str		=~ s/[\000-\033]/?/g;
+
+	return $str	if ($curlen < $len);
+	return $str	if ($len < 5);
+
+	$len	-= 3;
+	$str	= substr( $str, 0, $len / 2 ) .
+		  "..." .
+		  substr( $str, $curlen - ($len/2) + 1, $len/2 );
+
+	return $str;
+}
+
+# (c) 1998 Lorenzo Canovi <kanna@metodo.net>
+# (c) 2003 Lorenzo Canovi <kanna@lcanovi.com>
+# (c) 2006 Lorenzo Canovi <kanna@kubiclabs.com>
+
+
+
+
+
+#------------------------------------------------------------------------------
+# same function used by 'fast_fingerprint' command, copied here to avoid
+# spawning an external command
+#------------------------------------------------------------------------------
+
+
+
+sub fast_file_fingerprint
+{
+	my ($IFILE,$bufsize)	= @_;
+
+	if (!defined $IFILE || scalar(@_) > 2) {
+		die fast_file_fingerprint_usage();
+	}
+
+	return 1575846666	if ($IFILE eq "--timestamp");
+
+	$bufsize	= 1	if (!defined $bufsize);
+	$bufsize	*= 1024;
+
+	my $sizelimit	= 3.1 * $bufsize;
+	my @stats;
+	my $buf;
+	my $offset;
+	my $cnt;
+	my $md5		= new Digest::MD5;
+
+	@stats	= stat( $IFILE );
+
+	open( IFILE, "<$IFILE" ) or return;
+	$md5->reset();
+
+	if ($stats[7] < $sizelimit) {
+		$md5->addfile(IFILE);
+	} else {
+		# first $bufsize bytes
+		#
+		$cnt = read( IFILE, $buf, $bufsize ) or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		# middle
+		#
+		$offset = ($stats[7] - $bufsize) / 2;
+		seek( IFILE, $offset, 0 )		or return;
+		$cnt = read( IFILE, $buf, $bufsize )	or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		# at end
+		#
+		$offset = $bufsize * -1;
+		seek( IFILE, $offset, 2 )		or return;
+		$cnt = read( IFILE, $buf, $bufsize )	or return;
+		##printf( STDERR "D#    offset %10d: read %d bytes\n", $offset, $cnt );
+		$md5->add($buf);
+
+		$md5->add($stats[7]);
+	}
+	close( IFILE ) or return;
+
+	return	$md5->hexdigest();
+}
+
+
+sub fast_file_fingerprint_usage
+{
+	return "
+error, wrong parms
+
+USAGE:
+
+	use Digest::MD5;
+
+	fast_file_fingerprint( inputfile [, bufsize_in_Kb] )
+	fast_file_fingerprint( '--timestamp' )
+
+   	print fast_file_fingerprint_help();
+";
+}
+
+sub fast_file_fingerprint_help
+{
+	my $version	= "1.0";
+	my $date	= "2019/12";
+
+	return "
+== fast_file_fingerprint v.$version ($date) ==
+
+computes a \"smart\" md5 fingerprint of a file, using this algo:
+
+to avoid reading the whole file the program reads only 3 blocks of 1Kb,
+at beginning, at end, and in the middle, for a total of max 3Kb read
+each file
+
+the md5 fingerprint is then generated using the concatenation of the
+3 blocks above, plus the file size to add some precision
+
+if the actual filesize is less then the 3 blocks, then the whole file
+will be read instead, so the md5 is computed in the usual way
+
+the blocksize can be changed using the second parm, in Kb
+
+this fingerprint is not accurate as the whole file was used, but will
+suffice for most applications that needs quick fingerprinting large files
+
+returns undefined if the file does not exists, cannot be read or any
+error reading/seeking
+
+to avoid using an old fingerprint (one generated in the past, when
+a different fast algo was used, ie by a previous version of this
+function) we provide a timestamp (seconds since the epoch) of the
+date when this version of this function was released; call this
+function with '--timestamp' as filename for it
+
+you can compare your saved fingerprints age (if you have this
+option) and invalidate them if needed; ie, if I save a list of
+fingerprints in a file, then can compare the last-changed date
+of that file:
+
+ my \@stats = stat( \$listfile );
+ if (\$stats[9] < fast_file_fingerprint('--timestamp')) {
+ 	....INVALIDATE...
+ }
+
+";
+}
+
+

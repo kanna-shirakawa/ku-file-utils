@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename $0)
+CMDVER="1.6"
+CMDSTR="$CMD v$CMDVER (2022-08-09)"
+
+set -e -u
+
+# (FUNCTIONS)
+
+usage()
+{
+	echo "
+# $CMDSTR - archives files/dirs and rename with timestamp
+
+usage: $CMD [options] { dir(s) | archivefile(s) } ...
+
+options:
+ -n|--dry-run	don't do anything (show only commands)
+
+ --remove)	remove directories after archiving (default: no)
+ --fulltime	renames using YYYYmmddTHHMMSS-name time format
+		instead of default (YYYYmmdd-name)
+
+ --tar)		archive with tar (do not compress output)
+ -z|--gz	compress with tar + gzip
+ -j|--bz2	compress with tar + bzip2
+ --7z		compress with 7z
+ --zip		compress with zip
+
+. default comp method: $comp_method
+
+. args can be files, and should be tarfiles or any other archive
+  but the command will really works on any filetype, even if doesn't
+  have much sense
+
+. archiving (and compression), if requested, is applied only to
+  directories, not files
+
+" >&2
+	exit 1
+}
+
+# (MAIN)
+
+files=
+dry_run=false
+dry_run_flag=
+dry_go=
+comp_method="--gz"
+comp_cmd=
+remove_flag=
+fulltime=false
+is_dir=false
+fname=
+
+while [ $# != 0 ]
+do
+	case $1 in
+	  -n|--dry-run)		dry_run=true ; dry_run_flag='-n'; dry_msg="echo (dummy) " ;;
+	  --remove)		remove_flag="--remove" ;;
+	  --fulltime)		fulltime=true ;;
+ 	  --tar)		comp_method="--tar" ;;
+ 	  --7z)			comp_method="--7z" ;;
+ 	  --zip)		comp_method="--zip" ;;
+ 	  -z|--gz|--gzip)	comp_method="--gzip"; comp_cmd="gzip" ;;
+ 	  -j|--bz|--bzip2)	comp_method="--bzip2"; comp_cmd="bzip2" ;;
+
+	  -*|"")		usage ;;
+	   *)			files="$files\n$1" ;;
+	esac
+	shift
+done
+
+[ "$files" = "" ] && usage
+
+stat=0
+
+IFS=$'\n'
+for fname in $(echo -e "$files")
+do
+	[ "X$fname" = "X" ] && continue
+
+	fname=$(echo "$fname" | sed -e 's#/$##')
+
+	[ -e "$fname" ] || {
+		echo "file/dir '$fname' not found"
+		stat=1
+		continue
+	}
+	[ -L "$fname" ] && {
+		echo "ignored symlink '$fname'"
+		continue
+	}
+
+	is_dir=false
+	[ -d "$fname" ] && is_dir=true
+
+	newname=$(ku-timestamp-rename $dry_run_flag \
+		--cleanup \
+		--rename \
+		--show-newname "$fname") || continue
+	newname=${newname:-$fname}
+
+	case $comp_method in
+	  --gzip|--bzip2)
+	  	$is_dir || {
+			$dry_go $comp_cmd -v "$newname"
+			continue
+		}
+		;;
+	esac
+	ku-compressdir $dry_run_flag $remove_flag $comp_method "$newname"
+done
+
+exit $stat

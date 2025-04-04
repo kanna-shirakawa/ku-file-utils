@@ -1,0 +1,161 @@
+#!/bin/bash
+#
+# __copy1__
+# __copy2__
+#
+CMD=$(basename "$0")
+CMDVER="1.3"
+CMDSTR="$CMD v$CMDVER (2024-12-01)"
+
+set -e -u
+
+usage()
+{
+	echo "
+== $CMDSTR == calls iostat with fancy device names ==
+
+usage:	$CMD [iostat options ...]
+
+notes:
+
+  - replaces meaningless dm-* names with more fancy names, ie: /dev/lv*
+
+  - options can be saved, as is, in $cfg file; if any option is passed
+    as argument, the saved options are not used; options example in cfg:
+
+  	options='-m -z /dev/lvm/myserver /dev/sdb1'
+
+  - $CMD relies on standard iotstat output, if you use options like
+    --human or --pretty this command doesn't works as expected (will
+    does nothing)
+" >&2
+	exit 1
+}
+
+
+cleanup()
+{
+	$DEBUG || rm -f $tmpsed
+	return 0
+}
+
+
+build_devmap()
+{
+	local fs=
+	local _t=
+	local dev=
+	local devs=
+	local trans=
+	local maxlen=0
+
+	# get devices from args
+	#
+	devs=
+	for dev
+	do
+		# arg exists? should be a device name
+		[ -e "$dev" -o -e "/dev/$dev" ] && devs="$devs $dev"
+	done
+
+	# call iostat without colors, to get devices names
+	#
+	export S_COLORS='never'
+	devs=$(iostat $devs | sed -e '1,/^Device/d' -e 's/ .*//')
+
+	# build translation map, and find the max len of translated strings
+	#
+	for dev in $devs
+	do
+		fs=$(get_dm_name $dev)
+
+		[ "X$fs" = "X" ] && fs=$(grep "/dev/$dev " /proc/mounts | awk '{ print $2; }')
+		[ "X$fs" != "X" ] && fs="$dev=$fs"
+		fs=${fs:-$dev}
+
+		[ ${#fs} -gt $maxlen ] && maxlen=${#fs}
+
+		trans="$trans\n$dev $fs"
+	done
+	[ $maxlen -lt 8 ] && maxlen=8
+	fmt2="%-${maxlen}s "
+
+	# build padded translation file (for sed)
+	#
+	echo -e "$trans" | while :
+	do
+		read dev fs || break
+		[ "X$dev" = "X" ] && continue
+		printf "s#$fmt1#$fmt2#\n" "$dev" "$fs"
+	done
+
+	# finally, add header reformatting
+	#
+	printf "s#$fmt1#$fmt2#\n" "Device." "Device"
+
+	return 0
+}
+
+
+get_dm_name()
+{
+	case $1 in
+	  dm*|loop*)
+		$Has_dmsetup || return 0
+		dmname "$1"
+		;;
+	esac
+	return 0
+}
+
+
+
+# (MAIN)
+
+trap "cleanup" EXIT
+
+PATH="$PATH:/sbin:/usr/sbin"
+
+
+cfg="$HOME/.$CMD.cfg"
+fancydevs="/dev/lv*/* /dev/disk/by-label/*"
+options=
+fmt1="%-13s"
+fmt2="%-20s"
+Has_dmsetup=false
+DEBUG=${DEBUG:-false}
+
+case ${1:-} in
+ --help)	usage ;;
+ -D|--debug)	DEBUG=true; shift ;;
+esac
+
+if $DEBUG
+then
+	tmpsed="/tmp/$CMD.tmp"; rm -f $tmpsed; :>$tmpsed; chmod a+r $tmpsed
+else
+	tmpsed=$(mktemp "/tmp/$CMD-XXXXXXXX.tmp")
+fi
+
+[ -f $cfg ] && . $cfg
+[ $# != 0 ] && devices=
+
+# check if dmname is working (uses dmsetup, that requires root access)
+#
+[ "$(which dmsetup)" != "" ] && {
+	dmsetup ls >/dev/null 2>/dev/null && Has_dmsetup=true
+}
+
+
+if [ $# = 0 ]
+then
+	build_devmap $options >$tmpsed
+	export S_COLORS='always'
+	iostat $options | sed -f $tmpsed
+else
+	build_devmap "$@" >$tmpsed
+	export S_COLORS='always'
+	iostat "$@" | sed -f $tmpsed
+fi
+
+exit 0

@@ -1,0 +1,79 @@
+COMMANDS (/bin DIRECTORY)
+-------------------------
+
+mirror
+	quick frontend for rsync: duplicates verbatim one directory
+	to destination
+
+oldest
+	recursively search the oldest (or the newest) file in a directory
+
+non_blocking_dd
+	same as dd bs=1, but doesn't block (I developed this util to
+	patch a bug in some xen kernels that hangs reading /proc/kmsg)
+
+7z-rmo
+	small bash script that emulates "zip -rmo" behaviour, but on 7z
+	files (archive files, set resulting compressed file timestamp the
+	same of the newer file archived, and removes input files)
+
+ddtime
+	small perl script that emulates a basic 'dd' util, showing
+	progress; developed when dd was lacking the progress feature,
+	still usable (ie: to fill files with random patterns)
+
+dug
+	calls disk usage on args, summarizing and sorting results, and
+	printing them in human readable format
+
+fast_fingerprint
+	computes an MD5 fingerprint using only a small selection of file
+	blocks, usefull for fingerprinting very large files; used by
+	xlocate and fdupe utils
+
+fdupe
+	find duplicate files and perform commands on them
+
+ftpsync
+	cli based ftp server/client sync util
+
+ku-autosync
+	sync filesystems or block devices, 
+ku-compressdir
+ku-dusage
+ku-mediainfo
+ku-storicize
+ku-timestamp-rename
+kupurge
+kupurge-fast
+mirror
+non_blocking_dd
+oldest
+xlocate
+xlocate-diskinfos
+
+
+COMMANDS (/sbin DIRECTORY)
+-------------------------
+
+blocksync
+	sync block device from local to remote
+
+ku-ext3-to-ext4
+	convert ext3 filesystem to ext4
+
+ku-handle-removable-disk
+ku-handle-removable-luks
+	bash scripts to automatic mount/umount, and launch scripts on usb
+	disk add/remove events; must be used with udev rules
+
+lvusage
+	human readable LVM2 partitions summary
+
+verbatim_chown
+verbatim_chgrp
+	change owner (or groups) and restore original permissions if changed
+	(bypass the standard chown behaviour, that resets suid flag on
+	owner/group change)
+
+
