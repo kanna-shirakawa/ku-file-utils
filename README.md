@@ -5,6 +5,8 @@ WIP: just loading the project here from original package
 
 from debian/control description:
 
+some of utils contained here:
+
 * ku-timestamp-rename: find the newest file in the directory tree,
   change di dir mtime accordlying, optional renames the dir
   prepending the resulting timestamp
@@ -25,4 +27,4 @@ from debian/control description:
 * fdupe: search file dupes (using fast fingerprint)
 
 * bscp: rsync-like scp, for block devices (imported, not mine)
-* ext4-nonlazy: just a wrapper to run with lazy_init_table=0
+* mkfs.ext4-nonlazy: just a wrapper to run with lazy_init_table=0

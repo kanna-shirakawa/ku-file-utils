@@ -1,4 +1,4 @@
-.|1743762216|kanna
+.|1743762356|kanna
 sbin|1738416141|kanna
 sbin/dmname|1738416138|kanna
 sbin/verbatim_chown|1358785030|kanna
@@ -11,12 +11,12 @@ sbin/mkfs.ext4-nonlazy|1649686616|kanna
 sbin/ku-handle-removable-disk|1431042580|kanna
 man1|1522948682|kanna
 man1/ftpsync.1.gz|1522948359|kanna
-README.md|1743761166|kanna
-debian.in|1743761150|kanna
+README.md|1743762337|kanna
+debian.in|1743762326|kanna
 debian.in/changelog|1741785108|kanna
 debian.in/copyright|1586010632|kanna
 debian.in/rules|1678752047|kanna
-debian.in/control|1743761150|kanna
+debian.in/control|1743762325|kanna
 .gitignore|1743762196|kanna
 etc_autosync|1586011776|kanna
 etc_autosync/sync_table|1353544533|kanna
@@ -51,14 +51,12 @@ bin/kupurge-fast|1575885970|kanna
 bin/ftpsync|1520533204|kanna
 bin/ku-autosync|1614332887|kanna
 bin/ddtime|1696837148|kanna
-obsoleted|1641124975|kanna
-obsoleted/non_blocking_dd|1301169418|kanna
 ku|1743761978|kanna
 ku/install-functions.sh|1386274075|kanna
 ku/install.sh|1351004254|kanna
 ku/history|1741785108|kanna
 ku/install|1741775924|kanna
-.jtscm-autosync.lock|1743762216|kanna
+.jtscm-autosync.lock|1743762356|kanna
 debian|1741785111|kanna
 debian/compat|1693153119|kanna
 debian/changelog|1741785108|kanna
