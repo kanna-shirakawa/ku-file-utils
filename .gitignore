@@ -1,0 +1,9 @@
+*.lock
+*.swp
+*.tmp
+*~
+.~lock.*
+Thumbs.db
+temp/*
+tmp/*
+trash/*
