@@ -1,3 +1,10 @@
+ku-file-utils (1.0-ku25-04a) unstable; urgency=low
+
+  * PROJECT UPLOADED TO GITHUB
+
+
+ -- Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>  Fri, 04 Apr 2025 12:38:02 +0200
+
 ku-file-utils (1.0-ku25-03a) unstable; urgency=low
 
   * bin/xlocate-diskinfos
@@ -10,7 +17,6 @@ ku-file-utils (1.0-ku25-03a) unstable; urgency=low
     - fix: when scanning multiple dirs, copy disk usage file, if any, only once
     - fix: usage for add/update modes
     - fix: --leaf option is mandatory when scanning multiple dirs
-
 
  -- Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>  Wed, 12 Mar 2025 14:11:47 +0100
 

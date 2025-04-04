@@ -1,7 +1,7 @@
 :TOOLKIT	ku-file-utils
 :VERSION	1.0
-:RELEASE	ku25.03a
-:SIGNATURE	${VERSION}-${RELEASE} (2025-03-12)
+:RELEASE	ku25.04a
+:SIGNATURE	${VERSION}-${RELEASE} (2025-04-04)
 
 :maintainer	Lorenzo Canovi (KUBiC Labs, CH) <packager@kubiclabs.com>
 :homepage	http://www.kubiclabs.com/

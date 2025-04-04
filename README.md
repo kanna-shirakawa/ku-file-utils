@@ -28,3 +28,7 @@ some of utils contained here:
 
 * bscp: rsync-like scp, for block devices (imported, not mine)
 * mkfs.ext4-nonlazy: just a wrapper to run with lazy_init_table=0
+
+# RELEASES
+
+you can get prebuilt .deb packages from here: https://repos.kubit.ch
